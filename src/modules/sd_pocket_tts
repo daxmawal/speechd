@@ -223,6 +223,11 @@ class PocketTTSModule:
             self.debug("Rejected external Pocket TTS voice prompt path; path must be absolute.")
             return None
 
+        path = os.path.realpath(voice)
+        if not self.is_external_voice_prompt_path_allowed(path):
+            self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; outside allowed directories.")
+            return None
+
         flags = os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -240,6 +245,11 @@ class PocketTTSModule:
                 self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; not a regular file.")
                 os.close(fd)
                 return None
+            # Avoid Linux-only procfs paths: compare the opened file portably.
+            if not os.path.samestat(opened_info, os.stat(path)):
+                self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; changed during validation.")
+                os.close(fd)
+                return None
         except OSError as error:
             self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; {error}.")
             if fd is not None:
@@ -252,12 +262,6 @@ class PocketTTSModule:
                 f"{voice!r}; size {opened_info.st_size} exceeds limit "
                 f"{self.config.max_external_voice_prompt_bytes}."
             )
-            os.close(fd)
-            return None
-
-        path = os.path.realpath(f"/proc/self/fd/{fd}")
-        if not self.is_external_voice_prompt_path_allowed(path):
-            self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; outside allowed directories.")
             os.close(fd)
             return None
 
