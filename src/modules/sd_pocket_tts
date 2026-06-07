@@ -68,6 +68,7 @@ SUPPORTED_LANGUAGES = {
 @dataclass
 class Config:
     python: str = "python3"
+    debug: bool = False
     model_language: str = "english"
     default_voice: str = ""
     temperature: float = 0.7
@@ -94,13 +95,19 @@ class PocketTTSModule:
         self.model = None
         self.default_voice = config.default_voice
         self.voice_states: dict[str, object] = {}
-        self.debug_enabled = False
+        self.debug_enabled = config.debug
         self.debug_file = None
+        self.log_level = 0
 
-    def debug(self, message: str) -> None:
-        if self.debug_enabled and self.debug_file is not None:
-            self.debug_file.write(message + "\n")
-            self.debug_file.flush()
+    def debug(self, message: str, level: int = 3) -> None:
+        if not self.debug_enabled and self.log_level < level:
+            return
+        if self.debug_file is not None:
+            handle = self.debug_file
+        else:
+            handle = sys.stderr
+        handle.write(message + "\n")
+        handle.flush()
 
     def initialize(self) -> str:
         import torch  # noqa: F401
@@ -215,6 +222,18 @@ class PocketTTSModule:
 
         return False
 
+    def set_loglevel(self, var: str, val: str) -> bool:
+        if var != "log_level":
+            return False
+        try:
+            number = int(val)
+        except ValueError:
+            return False
+        if number < 0 or number > 5:
+            return False
+        self.log_level = number
+        return True
+
     def speak(self, text: str, message_type: str) -> None:
         if message_type in {"CHAR", "KEY"} and (text == "space" or text.isspace()):
             text = "space"
@@ -272,7 +291,13 @@ def parse_config(path: str | None) -> Config:
             if key.startswith("PocketTTS") and (key not in POCKET_TTS_CONFIG_KEYS or not values):
                 raise_config_error(path, line_number, f"invalid Pocket TTS directive {key!r}")
 
-            if key == "PocketTTSPython" and values:
+            if key == "Debug" and len(values) == 1:
+                config.debug = bool(
+                    parse_integer_option(path, line_number, key, values[0], choices={0, 1})
+                )
+            elif key == "Debug":
+                raise_config_error(path, line_number, "Debug expects exactly one argument")
+            elif key == "PocketTTSPython" and values:
                 config.python = values[0]
             elif key == "PocketTTSLanguage" and values:
                 if values[0] not in SUPPORTED_LANGUAGES:
@@ -310,10 +335,31 @@ def parse_config(path: str | None) -> Config:
                 config.quantize = bool(
                     parse_integer_option(path, line_number, key, values[0], choices={0, 1})
                 )
-            elif key == "AddVoice" and len(values) >= 3:
-                config.voices.append((values[0], values[1].upper(), values[2]))
+            elif key == "AddVoice":
+                config.voices.append(parse_voice_option(path, line_number, values))
 
     return config
+
+
+def parse_voice_option(path: str, line_number: int, values: list[str]) -> tuple[str, str, str]:
+    if len(values) != 3:
+        raise_config_error(path, line_number, "AddVoice expects exactly three arguments")
+
+    language, voice_type, voice_name = values
+    if not language:
+        raise_config_error(path, line_number, "AddVoice language must not be empty")
+    normalized_type = voice_type.upper()
+    if normalized_type not in VOICE_TYPES:
+        supported = ", ".join(sorted(VOICE_TYPES))
+        raise_config_error(
+            path,
+            line_number,
+            f"unsupported AddVoice voice type {voice_type!r}; supported values: {supported}",
+        )
+    if not voice_name:
+        raise_config_error(path, line_number, "AddVoice voice name must not be empty")
+
+    return language, normalized_type, voice_name
 
 
 def parse_integer_option(
@@ -555,12 +601,18 @@ def main() -> int:
                 if receive_params("AUDIO ", 207, set_audio):
                     print("203 OK AUDIO INITIALIZED", flush=True)
             elif command == "LOGLEVEL":
-                if receive_params("LOGLEVEL ", 207, lambda _var, _val: True):
+                if receive_params("LOGLEVEL ", 207, module.set_loglevel):
                     print("203 OK LOGLEVEL SET", flush=True)
             elif command.startswith("DEBUG"):
                 parts = command.split(maxsplit=2)
                 if len(parts) >= 2 and parts[1] == "ON" and len(parts) == 3:
-                    module.debug_file = open(parts[2], "a", encoding="utf-8")
+                    try:
+                        debug_file = open(parts[2], "a", encoding="utf-8")
+                    except OSError:
+                        print("303 CANT OPEN CUSTOM DEBUG FILE", flush=True)
+                        continue
+                    module.close()
+                    module.debug_file = debug_file
                     module.debug_enabled = True
                     print("200 OK DEBUGGING ON", flush=True)
                 elif len(parts) >= 2 and parts[1] == "OFF":
