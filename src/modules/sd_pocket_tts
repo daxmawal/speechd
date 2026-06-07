@@ -31,9 +31,11 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
+from urllib.parse import urlsplit
 
 
 MAX_VOICE_STATES = 4
+DEFAULT_MAX_EXTERNAL_VOICE_PROMPT_BYTES = 10 * 1024 * 1024
 
 VOICE_TYPES = {
     "MALE1",
@@ -47,9 +49,6 @@ VOICE_TYPES = {
 }
 
 UNSUPPORTED_NUMERIC_PARAMETERS = {"rate", "pitch", "pitch_range"}
-PUNCTUATION_MODES = {"none", "all", "some", "most"}
-SPELLING_MODES = {"off", "on"}
-CAPITAL_LETTER_MODES = {"none", "spell", "icon"}
 
 POCKET_TTS_CONFIG_KEYS = {
     "PocketTTSPython",
@@ -62,6 +61,8 @@ POCKET_TTS_CONFIG_KEYS = {
     "PocketTTSMaxTokens",
     "PocketTTSQuantize",
     "PocketTTSAllowExternalVoicePrompts",
+    "PocketTTSExternalVoicePromptDirectory",
+    "PocketTTSMaxExternalVoicePromptBytes",
 }
 
 SUPPORTED_LANGUAGES = {
@@ -89,6 +90,8 @@ class Config:
     max_tokens: int = 50
     quantize: bool = False
     allow_external_voice_prompts: bool = False
+    external_voice_prompt_dirs: List[str] = field(default_factory=list)
+    max_external_voice_prompt_bytes: int = DEFAULT_MAX_EXTERNAL_VOICE_PROMPT_BYTES
     voices: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
@@ -100,10 +103,19 @@ class Settings:
     volume: int = 0
 
 
+@dataclass
+class SpeechPart:
+    kind: str
+    value: str
+
+
 class PocketTTSModule:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.settings = Settings(speechd_language=default_speechd_language(config.voices))
+        self.settings = Settings(
+            speechd_language=default_speechd_language(config.voices),
+            voice_type=default_voice_type(config.voices),
+        )
         self.model = None
         self.default_voice = config.default_voice
         self.voice_states = OrderedDict()
@@ -172,9 +184,53 @@ class PocketTTSModule:
         return None
 
     def is_allowed_synthesis_voice(self, voice: str) -> bool:
-        if self.config.allow_external_voice_prompts:
+        if self.is_declared_voice(voice):
             return True
+        if self.config.allow_external_voice_prompts:
+            return self.is_allowed_external_voice_prompt(voice)
+        return False
+
+    def is_declared_voice(self, voice: str) -> bool:
         return any(voice == voice_name for _language, _voice_type, voice_name in self.config.voices)
+
+    def is_allowed_external_voice_prompt(self, voice: str) -> bool:
+        if urlsplit(voice).scheme:
+            self.debug("Rejected external Pocket TTS voice prompt URL; URLs are not supported.")
+            return False
+        if not os.path.isabs(voice):
+            self.debug("Rejected external Pocket TTS voice prompt path; path must be absolute.")
+            return False
+
+        path = os.path.realpath(voice)
+        try:
+            if not os.path.isfile(path):
+                self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; not a regular file.")
+                return False
+            size = os.path.getsize(path)
+        except OSError as error:
+            self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; {error}.")
+            return False
+
+        if size > self.config.max_external_voice_prompt_bytes:
+            self.debug(
+                "Rejected external Pocket TTS voice prompt "
+                f"{voice!r}; size {size} exceeds limit "
+                f"{self.config.max_external_voice_prompt_bytes}."
+            )
+            return False
+
+        for directory in self.config.external_voice_prompt_dirs:
+            allowed_directory = os.path.realpath(directory)
+            try:
+                path_is_allowed = os.path.commonpath([path, allowed_directory]) == allowed_directory
+            except ValueError:
+                path_is_allowed = False
+            if path_is_allowed:
+                self.debug(f"Accepted external Pocket TTS voice prompt {path!r}.")
+                return True
+
+        self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; outside allowed directories.")
+        return False
 
     def voice_state(self, voice: str):
         if voice in self.voice_states:
@@ -187,6 +243,10 @@ class PocketTTSModule:
             old_voice, _old_state = self.voice_states.popitem(last=False)
             self.debug(f"Evicted cached Pocket TTS voice state for {old_voice!r}.")
         return state
+
+    def discard_voice_state(self, voice: Optional[str]) -> None:
+        if voice is not None:
+            self.voice_states.pop(voice, None)
 
     def list_voices(
         self,
@@ -217,7 +277,9 @@ class PocketTTSModule:
                 return True
 
             if var in UNSUPPORTED_NUMERIC_PARAMETERS:
-                return self.accept_unsupported_numeric_parameter(var, val)
+                # TODO: implement these Speech Dispatcher controls. Until then,
+                # only accept neutral values so clients do not get false success.
+                return int(val) == 0
 
             if var == "language":
                 if val == "NULL":
@@ -246,38 +308,18 @@ class PocketTTSModule:
                 return True
 
             if var == "punctuation_mode":
-                return self.accept_unsupported_mode(var, val, PUNCTUATION_MODES, "none")
+                # TODO: implement punctuation preprocessing.
+                return val == "none"
             if var == "spelling_mode":
-                return self.accept_unsupported_mode(var, val, SPELLING_MODES, "off")
+                # TODO: implement spelling mode.
+                return val == "off"
             if var == "cap_let_recogn":
-                return self.accept_unsupported_mode(var, val, CAPITAL_LETTER_MODES, "none")
+                # TODO: implement capital-letter recognition.
+                return val == "none"
         except ValueError:
             return False
 
         return False
-
-    def accept_unsupported_numeric_parameter(self, var: str, val: str) -> bool:
-        number = int(val)
-        if number < -100 or number > 100:
-            return False
-        if number != 0:
-            # TODO: apply this parameter when Pocket TTS exposes a matching control.
-            self.debug(f"{var}={number} accepted but not supported by Pocket TTS; using no-op.")
-        return True
-
-    def accept_unsupported_mode(
-        self,
-        var: str,
-        val: str,
-        valid_values: Set[str],
-        neutral_value: str,
-    ) -> bool:
-        if val not in valid_values:
-            return False
-        if val != neutral_value:
-            # TODO: apply this parameter when Pocket TTS exposes a matching control.
-            self.debug(f"{var}={val} accepted but not supported by Pocket TTS; using no-op.")
-        return True
 
     def set_loglevel(self, var: str, val: str) -> bool:
         if var != "log_level":
@@ -294,32 +336,77 @@ class PocketTTSModule:
     def speak(self, text: str, message_type: str) -> None:
         if message_type in {"CHAR", "KEY"} and (text == "space" or text.isspace()):
             text = "space"
+        parts = [SpeechPart("text", text)]
         if message_type == "TEXT":
-            text = strip_ssml(text)
+            parts = parse_speech_parts(text)
 
-        if not text.strip():
+        has_text = any(part.kind == "text" and part.value.strip() for part in parts)
+        has_marks = any(part.kind == "mark" for part in parts)
+        if not has_text and not has_marks:
+            print("301 ERROR CANT SPEAK", flush=True)
+            return
+
+        voice = None
+        voice_state = None
+        first_text_index = None
+        first_stream = None
+        first_chunk = None
+        try:
+            if has_text:
+                voice = self.selected_voice()
+                voice_state = self.voice_state(voice)
+                for index, part in enumerate(parts):
+                    if part.kind == "text" and part.value.strip():
+                        first_text_index = index
+                        first_stream = self.audio_stream(voice_state, part.value)
+                        try:
+                            first_chunk = next(first_stream)
+                        except StopIteration:
+                            first_chunk = None
+                        break
+        except Exception:
+            self.discard_voice_state(voice)
+            self.log_exception("Pocket TTS synthesis setup failed.")
             print("301 ERROR CANT SPEAK", flush=True)
             return
 
         print("200 OK SPEAKING", flush=True)
+        print("701 BEGIN", flush=True)
 
         try:
-            print("701 BEGIN", flush=True)
-            voice = self.selected_voice()
-            voice_state = self.voice_state(voice)
+            for index, part in enumerate(parts):
+                if part.kind == "mark":
+                    report_index_mark(part.value)
+                    continue
+                if not part.value.strip():
+                    continue
 
-            for chunk in self.model.generate_audio_stream(
+                if index == first_text_index:
+                    stream = first_stream
+                    if first_chunk is not None:
+                        write_audio_chunk(first_chunk, self.model.sample_rate, self.settings.volume)
+                else:
+                    stream = self.audio_stream(voice_state, part.value)
+
+                for chunk in stream:
+                    write_audio_chunk(chunk, self.model.sample_rate, self.settings.volume)
+        except Exception:
+            self.discard_voice_state(voice)
+            self.log_exception("Pocket TTS synthesis failed after BEGIN; reporting STOP.")
+            print("703 STOP", flush=True)
+            return
+
+        print("702 END", flush=True)
+
+    def audio_stream(self, voice_state, text: str):
+        return iter(
+            self.model.generate_audio_stream(
                 voice_state,
                 text,
                 frames_after_eos=self.config.frames_after_eos,
                 max_tokens=self.config.max_tokens,
-            ):
-                write_audio_chunk(chunk, self.model.sample_rate, self.settings.volume)
-
-            print("702 END", flush=True)
-        except Exception:
-            self.log_exception("Pocket TTS synthesis failed.")
-            raise SystemExit(1)
+            )
+        )
 
     def close(self) -> None:
         if self.debug_file is not None:
@@ -398,8 +485,37 @@ def parse_config(path: Optional[str]) -> Config:
                 config.allow_external_voice_prompts = bool(
                     parse_integer_option(path, line_number, key, values[0], choices={0, 1})
                 )
+            elif key == "PocketTTSExternalVoicePromptDirectory" and values:
+                directory = values[0]
+                if not os.path.isabs(directory):
+                    raise_config_error(
+                        path,
+                        line_number,
+                        f"{key} expects an absolute directory path, got {directory!r}",
+                    )
+                if not os.path.isdir(directory):
+                    raise_config_error(
+                        path,
+                        line_number,
+                        f"{key} expects an existing directory, got {directory!r}",
+                    )
+                config.external_voice_prompt_dirs.append(os.path.realpath(directory))
+            elif key == "PocketTTSMaxExternalVoicePromptBytes" and values:
+                config.max_external_voice_prompt_bytes = parse_integer_option(
+                    path, line_number, key, values[0], minimum=1
+                )
             elif key == "AddVoice":
                 config.voices.append(parse_voice_option(path, line_number, values))
+            else:
+                raise_config_error(path, line_number, f"unknown directive {key!r}")
+
+    if config.allow_external_voice_prompts and not config.external_voice_prompt_dirs:
+        raise_config_error(
+            path,
+            0,
+            "PocketTTSAllowExternalVoicePrompts requires at least one "
+            "PocketTTSExternalVoicePromptDirectory",
+        )
 
     return config
 
@@ -566,22 +682,66 @@ def escape_audio(payload: bytes) -> bytes:
     return bytes(output)
 
 
-def strip_ssml(text: str) -> str:
+def parse_speech_parts(text: str) -> List[SpeechPart]:
     if "<" not in text or ">" not in text:
-        return text
+        return [SpeechPart("text", text)]
 
-    for candidate in (text, f"<root>{text}</root>"):
+    for candidate, include_root in ((text, True), (f"<root>{text}</root>", False)):
         try:
             root = ET.fromstring(candidate)
         except ET.ParseError:
             continue
-        return "".join(root.itertext())
+        parts: List[SpeechPart] = []
+        collect_speech_parts(root, parts, include_root)
+        return parts
 
-    return text
+    return [SpeechPart("text", text)]
+
+
+def collect_speech_parts(element, parts: List[SpeechPart], include_self: bool) -> None:
+    tag = xml_tag_name(element.tag)
+    if include_self and tag == "mark":
+        mark = element.attrib.get("name")
+        if mark:
+            parts.append(SpeechPart("mark", mark))
+    elif include_self and tag == "break":
+        add_text_part(parts, " ")
+
+    if element.text:
+        add_text_part(parts, element.text)
+
+    for child in list(element):
+        collect_speech_parts(child, parts, True)
+        if child.tail:
+            add_text_part(parts, child.tail)
+
+
+def add_text_part(parts: List[SpeechPart], text: str) -> None:
+    if parts and parts[-1].kind == "text":
+        parts[-1].value += text
+    else:
+        parts.append(SpeechPart("text", text))
+
+
+def strip_ssml(text: str) -> str:
+    return "".join(part.value for part in parse_speech_parts(text) if part.kind == "text")
+
+
+def xml_tag_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if tag.startswith("{") else tag
+
+
+def report_index_mark(mark: str) -> None:
+    print(f"700-{mark}", flush=False)
+    print("700 INDEX MARK", flush=True)
 
 
 def default_speechd_language(voices: List[Tuple[str, str, str]]) -> Optional[str]:
     return voices[0][0] if voices else None
+
+
+def default_voice_type(voices: List[Tuple[str, str, str]]) -> str:
+    return voices[0][1] if voices else "MALE1"
 
 
 def language_matches(requested: str, candidate: str) -> bool:
