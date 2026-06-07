@@ -68,7 +68,7 @@ SUPPORTED_LANGUAGES = {
 @dataclass
 class Config:
     python: str = "python3"
-    language: str = "english"
+    model_language: str = "english"
     default_voice: str = ""
     temperature: float = 0.7
     lsd_decode_steps: int = 1
@@ -81,16 +81,16 @@ class Config:
 
 @dataclass
 class Settings:
-    language: str | None = None
+    speechd_language: str | None = None
     voice_type: str = "MALE1"
     synthesis_voice: str | None = None
-    volume: int = 100
+    volume: int = 0
 
 
 class PocketTTSModule:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.settings = Settings(language=config.language)
+        self.settings = Settings(speechd_language=default_speechd_language(config.voices))
         self.model = None
         self.default_voice = config.default_voice
         self.voice_states: dict[str, object] = {}
@@ -109,14 +109,14 @@ class PocketTTSModule:
         from pocket_tts.default_parameters import get_default_voice_for_language
 
         self.model = TTSModel.load_model(
-            language=self.config.language,
+            language=self.config.model_language,
             temp=self.config.temperature,
             lsd_decode_steps=self.config.lsd_decode_steps,
             eos_threshold=self.config.eos_threshold,
             quantize=self.config.quantize,
         )
         if not self.default_voice:
-            self.default_voice = get_default_voice_for_language(self.config.language)
+            self.default_voice = get_default_voice_for_language(self.config.model_language)
         self.voice_states[self.default_voice] = self.model.get_state_for_audio_prompt(
             self.default_voice
         )
@@ -126,25 +126,33 @@ class PocketTTSModule:
         if self.settings.synthesis_voice:
             return self.settings.synthesis_voice
 
-        language = self.settings.language or self.config.language
+        language = self.settings.speechd_language
         voice_type = self.settings.voice_type
-        voice = self.lookup_voice(language, voice_type)
+        voice = self.lookup_voice(language, voice_type) if language is not None else None
         return voice or self.default_voice
 
     def lookup_voice(self, language: str, voice_type: str) -> str | None:
         normalized_type = voice_type.upper()
-        language_prefix = language.split("-", 1)[0].split("_", 1)[0]
+        normalized_language = language.lower().replace("_", "-")
+        language_prefix = normalized_language.split("-", 1)[0]
 
         for voice_language, candidate_type, voice_name in self.config.voices:
-            if voice_language == language and candidate_type == normalized_type:
+            candidate_language = voice_language.lower().replace("_", "-")
+            if candidate_language == normalized_language and candidate_type == normalized_type:
                 return voice_name
 
         for voice_language, candidate_type, voice_name in self.config.voices:
-            candidate_prefix = voice_language.split("-", 1)[0].split("_", 1)[0]
+            candidate_prefix = voice_language.lower().replace("_", "-").split("-", 1)[0]
             if candidate_prefix == language_prefix and candidate_type == normalized_type:
                 return voice_name
 
         return None
+
+    def has_voice_for_language(self, language: str) -> bool:
+        return any(
+            language_matches(language, voice_language)
+            for voice_language, _candidate_type, _voice_name in self.config.voices
+        )
 
     def list_voices(self, requested_language: str | None, requested_variant: str | None) -> None:
         sent_any = False
@@ -175,8 +183,12 @@ class PocketTTSModule:
                 return int(val) == 0
 
             if var == "language":
-                # TODO: load or switch Pocket TTS models when supporting more than one language.
-                self.settings.language = None if val == "NULL" else val
+                if val == "NULL":
+                    self.settings.speechd_language = default_speechd_language(self.config.voices)
+                    return True
+                if not self.has_voice_for_language(val):
+                    return False
+                self.settings.speechd_language = val
                 return True
 
             if var == "voice":
@@ -270,7 +282,7 @@ def parse_config(path: str | None) -> Config:
                         line_number,
                         f"unsupported PocketTTSLanguage {values[0]!r}; supported values: {supported}",
                     )
-                config.language = values[0]
+                config.model_language = values[0]
             elif key == "PocketTTSDefaultVoice" and values:
                 config.default_voice = values[0]
             elif key == "PocketTTSTemperature" and values:
@@ -399,8 +411,14 @@ def receive_params(kind: str, ack: int, setter) -> bool:
     return True
 
 
+def volume_gain(volume: int) -> float:
+    if volume < 0:
+        return (volume + 100) / 100.0
+    return 1.0 + volume / 100.0
+
+
 def write_audio_chunk(chunk, sample_rate: int, volume: int) -> None:
-    gain = (volume + 100) / 200
+    gain = volume_gain(volume)
     audio = chunk.detach().cpu().reshape(-1) * gain
     pcm = (
         (audio.clamp(-1, 1) * 32767)
@@ -442,6 +460,10 @@ def strip_ssml(text: str) -> str:
     return re.sub(r"<[^>]*>", "", text)
 
 
+def default_speechd_language(voices: list[tuple[str, str, str]]) -> str | None:
+    return voices[0][0] if voices else None
+
+
 def language_matches(requested: str, candidate: str) -> bool:
     requested_lower = requested.lower().replace("_", "-")
     candidate_lower = candidate.lower().replace("_", "-")
@@ -459,13 +481,17 @@ def print_init_error(details: str) -> None:
 def main() -> int:
     config_path = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else None
     config_error = None
+    reexec_error = None
     try:
         config = parse_config(config_path)
     except Exception as error:
         config = Config()
         config_error = error
     else:
-        maybe_reexec(config, sys.argv)
+        try:
+            maybe_reexec(config, sys.argv)
+        except OSError as error:
+            reexec_error = error
 
     line = sys.stdin.readline()
     if line != "INIT\n":
@@ -474,6 +500,10 @@ def main() -> int:
 
     if config_error is not None:
         print_init_error(str(config_error))
+        return 1
+
+    if reexec_error is not None:
+        print_init_error(str(reexec_error))
         return 1
 
     module = PocketTTSModule(config)
@@ -493,7 +523,14 @@ def main() -> int:
                 return 1
             command = command.rstrip("\n")
 
-            if command in {"SPEAK", "SOUND_ICON", "CHAR", "KEY"}:
+            if command == "SOUND_ICON":
+                print("202 OK RECEIVING MESSAGE", flush=True)
+                _text, lines = read_message()
+                if lines > 1:
+                    print("305 DATA MORE THAN ONE LINE", flush=True)
+                    continue
+                print("301 ERROR CANT SPEAK", flush=True)
+            elif command in {"SPEAK", "CHAR", "KEY"}:
                 print("202 OK RECEIVING MESSAGE", flush=True)
                 text, lines = read_message()
                 if command != "SPEAK" and lines > 1:
