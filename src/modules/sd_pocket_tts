@@ -27,8 +27,12 @@ import shlex
 import shutil
 import sys
 import traceback
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import List, Optional, Set, Tuple
 
+
+MAX_VOICE_STATES = 4
 
 VOICE_TYPES = {
     "MALE1",
@@ -41,6 +45,11 @@ VOICE_TYPES = {
     "CHILD_FEMALE",
 }
 
+UNSUPPORTED_NUMERIC_PARAMETERS = {"rate", "pitch", "pitch_range"}
+PUNCTUATION_MODES = {"none", "all", "some", "most"}
+SPELLING_MODES = {"off", "on"}
+CAPITAL_LETTER_MODES = {"none", "spell", "icon"}
+
 POCKET_TTS_CONFIG_KEYS = {
     "PocketTTSPython",
     "PocketTTSLanguage",
@@ -51,6 +60,7 @@ POCKET_TTS_CONFIG_KEYS = {
     "PocketTTSFramesAfterEos",
     "PocketTTSMaxTokens",
     "PocketTTSQuantize",
+    "PocketTTSAllowExternalVoicePrompts",
 }
 
 SUPPORTED_LANGUAGES = {
@@ -74,18 +84,19 @@ class Config:
     temperature: float = 0.7
     lsd_decode_steps: int = 1
     eos_threshold: float = -4.0
-    frames_after_eos: int | None = None
+    frames_after_eos: Optional[int] = None
     max_tokens: int = 50
     quantize: bool = False
-    voices: list[tuple[str, str, str]] = field(default_factory=list)
+    allow_external_voice_prompts: bool = False
+    voices: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
 class Settings:
-    speechd_language: str | None = None
+    speechd_language: Optional[str] = None
     voice_type: str = "MALE1"
-    synthesis_voice: str | None = None
-    volume: int = 0
+    synthesis_voice: Optional[str] = None
+    volume: int = 100
 
 
 class PocketTTSModule:
@@ -94,7 +105,7 @@ class PocketTTSModule:
         self.settings = Settings(speechd_language=default_speechd_language(config.voices))
         self.model = None
         self.default_voice = config.default_voice
-        self.voice_states: dict[str, object] = {}
+        self.voice_states = OrderedDict()
         self.debug_enabled = config.debug
         self.debug_file = None
         self.log_level = 0
@@ -124,9 +135,7 @@ class PocketTTSModule:
         )
         if not self.default_voice:
             self.default_voice = get_default_voice_for_language(self.config.model_language)
-        self.voice_states[self.default_voice] = self.model.get_state_for_audio_prompt(
-            self.default_voice
-        )
+        self.voice_state(self.default_voice)
         return "Pocket TTS initialized successfully."
 
     def selected_voice(self) -> str:
@@ -138,7 +147,7 @@ class PocketTTSModule:
         voice = self.lookup_voice(language, voice_type) if language is not None else None
         return voice or self.default_voice
 
-    def lookup_voice(self, language: str, voice_type: str) -> str | None:
+    def lookup_voice(self, language: str, voice_type: str) -> Optional[str]:
         normalized_type = voice_type.upper()
         normalized_language = language.lower().replace("_", "-")
         language_prefix = normalized_language.split("-", 1)[0]
@@ -161,7 +170,28 @@ class PocketTTSModule:
             for voice_language, _candidate_type, _voice_name in self.config.voices
         )
 
-    def list_voices(self, requested_language: str | None, requested_variant: str | None) -> None:
+    def is_allowed_synthesis_voice(self, voice: str) -> bool:
+        if self.config.allow_external_voice_prompts:
+            return True
+        return any(voice == voice_name for _language, _voice_type, voice_name in self.config.voices)
+
+    def voice_state(self, voice: str):
+        if voice in self.voice_states:
+            self.voice_states.move_to_end(voice)
+            return self.voice_states[voice]
+
+        state = self.model.get_state_for_audio_prompt(voice)
+        self.voice_states[voice] = state
+        if len(self.voice_states) > MAX_VOICE_STATES:
+            old_voice, _old_state = self.voice_states.popitem(last=False)
+            self.debug(f"Evicted cached Pocket TTS voice state for {old_voice!r}.")
+        return state
+
+    def list_voices(
+        self,
+        requested_language: Optional[str],
+        requested_variant: Optional[str],
+    ) -> None:
         sent_any = False
         for language, variant, name in self.config.voices:
             if requested_language is not None and not language_matches(requested_language, language):
@@ -185,9 +215,8 @@ class PocketTTSModule:
                 self.settings.volume = number
                 return True
 
-            if var in {"rate", "pitch", "pitch_range"}:
-                # TODO: support rate and pitch control instead of accepting non-neutral values.
-                return int(val) == 0
+            if var in UNSUPPORTED_NUMERIC_PARAMETERS:
+                return self.accept_unsupported_numeric_parameter(var, val)
 
             if var == "language":
                 if val == "NULL":
@@ -207,20 +236,47 @@ class PocketTTSModule:
                 return True
 
             if var == "synthesis_voice":
-                self.settings.synthesis_voice = None if val == "NULL" else val
+                if val == "NULL":
+                    self.settings.synthesis_voice = None
+                    return True
+                if not self.is_allowed_synthesis_voice(val):
+                    return False
+                self.settings.synthesis_voice = val
                 return True
 
-            # TODO: implement punctuation, spelling, and capital-letter handling.
             if var == "punctuation_mode":
-                return val == "none"
+                return self.accept_unsupported_mode(var, val, PUNCTUATION_MODES, "none")
             if var == "spelling_mode":
-                return val == "off"
+                return self.accept_unsupported_mode(var, val, SPELLING_MODES, "off")
             if var == "cap_let_recogn":
-                return val == "none"
+                return self.accept_unsupported_mode(var, val, CAPITAL_LETTER_MODES, "none")
         except ValueError:
             return False
 
         return False
+
+    def accept_unsupported_numeric_parameter(self, var: str, val: str) -> bool:
+        number = int(val)
+        if number < -100 or number > 100:
+            return False
+        if number != 0:
+            # TODO: apply this parameter when Pocket TTS exposes a matching control.
+            self.debug(f"{var}={number} accepted but not supported by Pocket TTS; using no-op.")
+        return True
+
+    def accept_unsupported_mode(
+        self,
+        var: str,
+        val: str,
+        valid_values: Set[str],
+        neutral_value: str,
+    ) -> bool:
+        if val not in valid_values:
+            return False
+        if val != neutral_value:
+            # TODO: apply this parameter when Pocket TTS exposes a matching control.
+            self.debug(f"{var}={val} accepted but not supported by Pocket TTS; using no-op.")
+        return True
 
     def set_loglevel(self, var: str, val: str) -> bool:
         if var != "log_level":
@@ -249,11 +305,10 @@ class PocketTTSModule:
         try:
             print("701 BEGIN", flush=True)
             voice = self.selected_voice()
-            if voice not in self.voice_states:
-                self.voice_states[voice] = self.model.get_state_for_audio_prompt(voice)
+            voice_state = self.voice_state(voice)
 
             for chunk in self.model.generate_audio_stream(
-                self.voice_states[voice],
+                voice_state,
                 text,
                 frames_after_eos=self.config.frames_after_eos,
                 max_tokens=self.config.max_tokens,
@@ -271,7 +326,7 @@ class PocketTTSModule:
             self.debug_file = None
 
 
-def parse_config(path: str | None) -> Config:
+def parse_config(path: Optional[str]) -> Config:
     config = Config()
     if path is None:
         return config
@@ -288,8 +343,11 @@ def parse_config(path: str | None) -> Config:
 
             key = parts[0]
             values = parts[1:]
-            if key.startswith("PocketTTS") and (key not in POCKET_TTS_CONFIG_KEYS or not values):
-                raise_config_error(path, line_number, f"invalid Pocket TTS directive {key!r}")
+            if key.startswith("PocketTTS"):
+                if key not in POCKET_TTS_CONFIG_KEYS:
+                    raise_config_error(path, line_number, f"invalid Pocket TTS directive {key!r}")
+                if len(values) != 1:
+                    raise_config_error(path, line_number, f"{key} expects exactly one argument")
 
             if key == "Debug" and len(values) == 1:
                 config.debug = bool(
@@ -335,13 +393,17 @@ def parse_config(path: str | None) -> Config:
                 config.quantize = bool(
                     parse_integer_option(path, line_number, key, values[0], choices={0, 1})
                 )
+            elif key == "PocketTTSAllowExternalVoicePrompts" and values:
+                config.allow_external_voice_prompts = bool(
+                    parse_integer_option(path, line_number, key, values[0], choices={0, 1})
+                )
             elif key == "AddVoice":
                 config.voices.append(parse_voice_option(path, line_number, values))
 
     return config
 
 
-def parse_voice_option(path: str, line_number: int, values: list[str]) -> tuple[str, str, str]:
+def parse_voice_option(path: str, line_number: int, values: List[str]) -> Tuple[str, str, str]:
     if len(values) != 3:
         raise_config_error(path, line_number, "AddVoice expects exactly three arguments")
 
@@ -368,8 +430,8 @@ def parse_integer_option(
     key: str,
     value: str,
     *,
-    minimum: int | None = None,
-    choices: set[int] | None = None,
+    minimum: Optional[int] = None,
+    choices: Optional[Set[int]] = None,
 ) -> int:
     try:
         number = int(value)
@@ -388,7 +450,7 @@ def raise_config_error(
     path: str,
     line_number: int,
     message: str,
-    cause: Exception | None = None,
+    cause: Optional[Exception] = None,
 ) -> None:
     error = ValueError(f"{path}:{line_number}: {message}")
     if cause is not None:
@@ -396,7 +458,7 @@ def raise_config_error(
     raise error
 
 
-def maybe_reexec(config: Config, argv: list[str]) -> None:
+def maybe_reexec(config: Config, argv: List[str]) -> None:
     if "--no-reexec" in argv:
         return
 
@@ -417,7 +479,7 @@ def maybe_reexec(config: Config, argv: list[str]) -> None:
     os.execvp(configured_python, [configured_python, __file__, *argv[1:], "--no-reexec"])
 
 
-def read_message() -> tuple[str, int]:
+def read_message() -> Tuple[str, int]:
     lines = []
     while True:
         line = sys.stdin.readline()
@@ -458,9 +520,7 @@ def receive_params(kind: str, ack: int, setter) -> bool:
 
 
 def volume_gain(volume: int) -> float:
-    if volume < 0:
-        return (volume + 100) / 100.0
-    return 1.0 + volume / 100.0
+    return max(0.0, min(1.0, (volume + 100) / 200.0))
 
 
 def write_audio_chunk(chunk, sample_rate: int, volume: int) -> None:
@@ -506,7 +566,7 @@ def strip_ssml(text: str) -> str:
     return re.sub(r"<[^>]*>", "", text)
 
 
-def default_speechd_language(voices: list[tuple[str, str, str]]) -> str | None:
+def default_speechd_language(voices: List[Tuple[str, str, str]]) -> Optional[str]:
     return voices[0][0] if voices else None
 
 
