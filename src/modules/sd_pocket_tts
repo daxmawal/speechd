@@ -25,7 +25,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import sys
+import tempfile
 import traceback
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
@@ -47,6 +49,17 @@ VOICE_TYPES = {
     "CHILD_MALE",
     "CHILD_FEMALE",
 }
+
+VOICE_FALLBACK_ORDER = (
+    "MALE1",
+    "FEMALE1",
+    "MALE2",
+    "FEMALE2",
+    "MALE3",
+    "FEMALE3",
+    "CHILD_MALE",
+    "CHILD_FEMALE",
+)
 
 UNSUPPORTED_NUMERIC_PARAMETERS = {"rate", "pitch", "pitch_range"}
 
@@ -122,6 +135,7 @@ class PocketTTSModule:
         self.debug_enabled = config.debug
         self.debug_file = None
         self.log_level = 0
+        self.external_voice_prompt_files = set()
 
     def debug(self, message: str, level: int = 3) -> None:
         if not self.debug_enabled and self.log_level < level:
@@ -167,58 +181,99 @@ class PocketTTSModule:
         return voice or self.default_voice
 
     def lookup_voice(self, language: str, voice_type: str) -> Optional[str]:
-        normalized_type = voice_type.upper()
+        requested_type = voice_type.upper()
+        fallback_types = [requested_type]
+        fallback_types.extend(
+            candidate_type
+            for candidate_type in VOICE_FALLBACK_ORDER
+            if candidate_type != requested_type
+        )
         normalized_language = language.lower().replace("_", "-")
         language_prefix = normalized_language.split("-", 1)[0]
 
-        for voice_language, candidate_type, voice_name in self.config.voices:
-            candidate_language = voice_language.lower().replace("_", "-")
-            if candidate_language == normalized_language and candidate_type == normalized_type:
-                return voice_name
+        for requested_type in fallback_types:
+            for voice_language, candidate_type, voice_name in self.config.voices:
+                candidate_language = voice_language.lower().replace("_", "-")
+                if candidate_language == normalized_language and candidate_type == requested_type:
+                    return voice_name
 
-        for voice_language, candidate_type, voice_name in self.config.voices:
-            candidate_prefix = voice_language.lower().replace("_", "-").split("-", 1)[0]
-            if candidate_prefix == language_prefix and candidate_type == normalized_type:
-                return voice_name
+        for requested_type in fallback_types:
+            for voice_language, candidate_type, voice_name in self.config.voices:
+                candidate_prefix = voice_language.lower().replace("_", "-").split("-", 1)[0]
+                if candidate_prefix == language_prefix and candidate_type == requested_type:
+                    return voice_name
 
         return None
 
-    def is_allowed_synthesis_voice(self, voice: str) -> bool:
+    def resolve_synthesis_voice(self, voice: str) -> Optional[str]:
         if self.is_declared_voice(voice):
-            return True
+            return voice
         if self.config.allow_external_voice_prompts:
-            return self.is_allowed_external_voice_prompt(voice)
-        return False
+            return self.copy_external_voice_prompt(voice)
+        return None
 
     def is_declared_voice(self, voice: str) -> bool:
         return any(voice == voice_name for _language, _voice_type, voice_name in self.config.voices)
 
-    def is_allowed_external_voice_prompt(self, voice: str) -> bool:
+    def copy_external_voice_prompt(self, voice: str) -> Optional[str]:
         if urlsplit(voice).scheme:
             self.debug("Rejected external Pocket TTS voice prompt URL; URLs are not supported.")
-            return False
+            return None
         if not os.path.isabs(voice):
             self.debug("Rejected external Pocket TTS voice prompt path; path must be absolute.")
-            return False
+            return None
 
-        path = os.path.realpath(voice)
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+
+        fd = None
         try:
-            if not os.path.isfile(path):
+            path_info = os.lstat(voice)
+            if stat.S_ISLNK(path_info.st_mode):
+                self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; symlink.")
+                return None
+
+            fd = os.open(voice, flags)
+            opened_info = os.fstat(fd)
+            if not stat.S_ISREG(opened_info.st_mode):
                 self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; not a regular file.")
-                return False
-            size = os.path.getsize(path)
+                os.close(fd)
+                return None
         except OSError as error:
             self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; {error}.")
-            return False
+            if fd is not None:
+                os.close(fd)
+            return None
 
-        if size > self.config.max_external_voice_prompt_bytes:
+        if opened_info.st_size > self.config.max_external_voice_prompt_bytes:
             self.debug(
                 "Rejected external Pocket TTS voice prompt "
-                f"{voice!r}; size {size} exceeds limit "
+                f"{voice!r}; size {opened_info.st_size} exceeds limit "
                 f"{self.config.max_external_voice_prompt_bytes}."
             )
-            return False
+            os.close(fd)
+            return None
 
+        path = os.path.realpath(f"/proc/self/fd/{fd}")
+        if not self.is_external_voice_prompt_path_allowed(path):
+            self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; outside allowed directories.")
+            os.close(fd)
+            return None
+
+        try:
+            private_path = self.copy_open_voice_prompt(fd, path)
+        except OSError as error:
+            self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; copy failed: {error}.")
+            os.close(fd)
+            return None
+
+        os.close(fd)
+        self.external_voice_prompt_files.add(private_path)
+        self.debug(f"Accepted external Pocket TTS voice prompt {path!r}; using private copy.")
+        return private_path
+
+    def is_external_voice_prompt_path_allowed(self, path: str) -> bool:
         for directory in self.config.external_voice_prompt_dirs:
             allowed_directory = os.path.realpath(directory)
             try:
@@ -226,11 +281,29 @@ class PocketTTSModule:
             except ValueError:
                 path_is_allowed = False
             if path_is_allowed:
-                self.debug(f"Accepted external Pocket TTS voice prompt {path!r}.")
                 return True
-
-        self.debug(f"Rejected external Pocket TTS voice prompt {voice!r}; outside allowed directories.")
         return False
+
+    def copy_open_voice_prompt(self, fd: int, source_path: str) -> str:
+        suffix = os.path.splitext(source_path)[1]
+        private_file = tempfile.NamedTemporaryFile(
+            prefix="sd-pocket-tts-",
+            suffix=suffix,
+            delete=False,
+        )
+        private_path = private_file.name
+        try:
+            with private_file:
+                with os.fdopen(os.dup(fd), "rb") as source:
+                    copy_limited(
+                        source,
+                        private_file,
+                        self.config.max_external_voice_prompt_bytes,
+                    )
+        except Exception:
+            unlink_if_exists(private_path)
+            raise
+        return private_path
 
     def voice_state(self, voice: str):
         if voice in self.voice_states:
@@ -295,16 +368,18 @@ class PocketTTSModule:
                 if normalized not in VOICE_TYPES:
                     return False
                 self.settings.voice_type = normalized
-                self.settings.synthesis_voice = None
+                self.clear_synthesis_voice()
                 return True
 
             if var == "synthesis_voice":
                 if val == "NULL":
-                    self.settings.synthesis_voice = None
+                    self.clear_synthesis_voice()
                     return True
-                if not self.is_allowed_synthesis_voice(val):
+                resolved_voice = self.resolve_synthesis_voice(val)
+                if resolved_voice is None:
                     return False
-                self.settings.synthesis_voice = val
+                self.clear_synthesis_voice()
+                self.settings.synthesis_voice = resolved_voice
                 return True
 
             if var == "punctuation_mode":
@@ -412,6 +487,25 @@ class PocketTTSModule:
         if self.debug_file is not None:
             self.debug_file.close()
             self.debug_file = None
+
+    def cleanup(self) -> None:
+        self.close()
+        self.clear_synthesis_voice()
+        for path in list(self.external_voice_prompt_files):
+            self.delete_external_voice_prompt(path)
+
+    def clear_synthesis_voice(self) -> None:
+        voice = self.settings.synthesis_voice
+        if voice is not None:
+            self.discard_voice_state(voice)
+            self.delete_external_voice_prompt(voice)
+        self.settings.synthesis_voice = None
+
+    def delete_external_voice_prompt(self, path: str) -> None:
+        if path not in self.external_voice_prompt_files:
+            return
+        unlink_if_exists(path)
+        self.external_voice_prompt_files.discard(path)
 
 
 def parse_config(path: Optional[str]) -> Config:
@@ -682,6 +776,25 @@ def escape_audio(payload: bytes) -> bytes:
     return bytes(output)
 
 
+def copy_limited(source, target, max_bytes: int) -> None:
+    copied = 0
+    while True:
+        chunk = source.read(65536)
+        if not chunk:
+            return
+        copied += len(chunk)
+        if copied > max_bytes:
+            raise OSError(f"voice prompt exceeds {max_bytes} bytes")
+        target.write(chunk)
+
+
+def unlink_if_exists(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def parse_speech_parts(text: str) -> List[SpeechPart]:
     if "<" not in text or ">" not in text:
         return [SpeechPart("text", text)]
@@ -860,13 +973,14 @@ def main() -> int:
                 else:
                     print("302 ERROR BAD SYNTAX", flush=True)
             elif command == "QUIT":
-                module.close()
                 print("210 OK QUIT", flush=True)
                 return 0
             else:
                 print("300 ERR UNKNOWN COMMAND", flush=True)
     except EOFError:
         return 1
+    finally:
+        module.cleanup()
 
 
 if __name__ == "__main__":
