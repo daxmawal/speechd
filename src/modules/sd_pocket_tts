@@ -97,7 +97,7 @@ class Settings:
     speechd_language: Optional[str] = None
     voice_type: str = "MALE1"
     synthesis_voice: Optional[str] = None
-    volume: int = 100
+    volume: int = 0
 
 
 class PocketTTSModule:
@@ -119,6 +119,12 @@ class PocketTTSModule:
         else:
             handle = sys.stderr
         handle.write(message + "\n")
+        handle.flush()
+
+    def log_exception(self, message: str) -> None:
+        details = traceback.format_exc()
+        handle = self.debug_file if self.debug_file is not None else sys.stderr
+        handle.write(f"{message}\n{details}")
         handle.flush()
 
     def initialize(self) -> str:
@@ -312,8 +318,8 @@ class PocketTTSModule:
 
             print("702 END", flush=True)
         except Exception:
-            self.debug(traceback.format_exc())
-            print("703 STOP", flush=True)
+            self.log_exception("Pocket TTS synthesis failed.")
+            raise SystemExit(1)
 
     def close(self) -> None:
         if self.debug_file is not None:
@@ -515,7 +521,10 @@ def receive_params(kind: str, ack: int, setter) -> bool:
 
 
 def volume_gain(volume: int) -> float:
-    return max(0.0, min(1.0, (volume + 100) / 200.0))
+    volume = max(-100, min(100, volume))
+    if volume < 0:
+        return (volume + 100) / 100.0
+    return 1.0 + volume / 100.0
 
 
 def write_audio_chunk(chunk, sample_rate: int, volume: int) -> None:
