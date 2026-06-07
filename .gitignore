@@ -1,5 +1,7 @@
 *.o
+*.py[cod]
 .deps
+__pycache__/
 /*.bak
 /*.gcda
 /*.gcno

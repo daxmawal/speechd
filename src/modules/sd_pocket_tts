@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""Speech Dispatcher output module for Kyutai Pocket TTS."""
+
+from __future__ import annotations
+
+import os
+import re
+import shlex
+import shutil
+import sys
+import traceback
+from dataclasses import dataclass, field
+
+
+VOICE_TYPES = {
+    "MALE1",
+    "MALE2",
+    "MALE3",
+    "FEMALE1",
+    "FEMALE2",
+    "FEMALE3",
+    "CHILD_MALE",
+    "CHILD_FEMALE",
+}
+
+
+@dataclass
+class Config:
+    python: str = "python3"
+    language: str = "english"
+    default_voice: str = ""
+    temperature: float = 0.7
+    lsd_decode_steps: int = 1
+    eos_threshold: float = -4.0
+    frames_after_eos: int | None = None
+    max_tokens: int = 50
+    quantize: bool = False
+    voices: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+@dataclass
+class Settings:
+    language: str | None = None
+    voice_type: str = "MALE1"
+    synthesis_voice: str | None = None
+    rate: int = 0
+    pitch: int = 0
+    pitch_range: int = 0
+    volume: int = 0
+    punctuation_mode: str = "none"
+
+
+class PocketTTSModule:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.settings = Settings(language=config.language)
+        self.model = None
+        self.default_voice = config.default_voice
+        self.voice_states: dict[str, object] = {}
+        self.stop_requested = False
+        self.debug_enabled = False
+        self.debug_file = None
+
+    def debug(self, message: str) -> None:
+        if self.debug_enabled and self.debug_file is not None:
+            self.debug_file.write(message + "\n")
+            self.debug_file.flush()
+
+    def initialize(self) -> str:
+        import torch  # noqa: F401
+
+        from pocket_tts import TTSModel
+        from pocket_tts.default_parameters import get_default_voice_for_language
+
+        self.model = TTSModel.load_model(
+            language=self.config.language,
+            temp=self.config.temperature,
+            lsd_decode_steps=self.config.lsd_decode_steps,
+            eos_threshold=self.config.eos_threshold,
+            quantize=self.config.quantize,
+        )
+        if not self.default_voice:
+            self.default_voice = get_default_voice_for_language(self.config.language)
+        self.voice_states[self.default_voice] = self.model.get_state_for_audio_prompt(
+            self.default_voice
+        )
+        return "Pocket TTS initialized successfully."
+
+    def selected_voice(self) -> str:
+        if self.settings.synthesis_voice:
+            return self.settings.synthesis_voice
+
+        language = self.settings.language or self.config.language
+        voice_type = self.settings.voice_type
+        voice = self.lookup_voice(language, voice_type)
+        return voice or self.default_voice
+
+    def lookup_voice(self, language: str, voice_type: str) -> str | None:
+        normalized_type = voice_type.upper()
+        language_prefix = language.split("-", 1)[0].split("_", 1)[0]
+
+        for voice_language, candidate_type, voice_name in self.config.voices:
+            if voice_language == language and candidate_type == normalized_type:
+                return voice_name
+
+        for voice_language, candidate_type, voice_name in self.config.voices:
+            candidate_prefix = voice_language.split("-", 1)[0].split("_", 1)[0]
+            if candidate_prefix == language_prefix and candidate_type == normalized_type:
+                return voice_name
+
+        return None
+
+    def list_voices(self, requested_language: str | None, requested_variant: str | None) -> None:
+        sent_any = False
+        for language, variant, name in self.config.voices:
+            if requested_language is not None and not language_matches(requested_language, language):
+                continue
+            if requested_variant is not None and requested_variant.lower() != variant.lower():
+                continue
+            print(f"200-{name}\t{language}\t{variant}", flush=False)
+            sent_any = True
+
+        if sent_any:
+            print("200 OK VOICE LIST SENT", flush=True)
+        else:
+            print("304 CANT LIST VOICES", flush=True)
+
+    def set_parameter(self, var: str, val: str) -> bool:
+        try:
+            if var in {"rate", "pitch", "pitch_range", "volume"}:
+                number = int(val)
+                if number < -100 or number > 100:
+                    return False
+                setattr(self.settings, var, number)
+                return True
+
+            if var == "language":
+                self.settings.language = None if val == "NULL" else val
+                return True
+
+            if var == "voice":
+                normalized = val.upper()
+                if normalized not in VOICE_TYPES:
+                    return False
+                self.settings.voice_type = normalized
+                self.settings.synthesis_voice = None
+                return True
+
+            if var == "synthesis_voice":
+                self.settings.synthesis_voice = None if val == "NULL" else val
+                return True
+
+            if var in {"punctuation_mode", "spelling_mode", "cap_let_recogn"}:
+                setattr(self.settings, var, val)
+                return True
+        except ValueError:
+            return False
+
+        return False
+
+    def speak(self, text: str, message_type: str) -> None:
+        if message_type in {"CHAR", "KEY"} and text == "space":
+            text = " "
+        if message_type == "TEXT":
+            text = strip_ssml(text)
+
+        if not text.strip():
+            print("301 ERROR CANT SPEAK", flush=True)
+            return
+
+        print("200 OK SPEAKING", flush=True)
+        self.stop_requested = False
+
+        try:
+            print("701 BEGIN", flush=True)
+            voice = self.selected_voice()
+            if voice not in self.voice_states:
+                self.voice_states[voice] = self.model.get_state_for_audio_prompt(voice)
+
+            for chunk in self.model.generate_audio_stream(
+                self.voice_states[voice],
+                text,
+                frames_after_eos=self.config.frames_after_eos,
+                max_tokens=self.config.max_tokens,
+            ):
+                if self.stop_requested:
+                    print("703 STOP", flush=True)
+                    return
+                write_audio_chunk(chunk, self.model.sample_rate)
+
+            if self.stop_requested:
+                print("703 STOP", flush=True)
+            else:
+                print("702 END", flush=True)
+        except Exception:
+            self.debug(traceback.format_exc())
+            print("703 STOP", flush=True)
+
+    def close(self) -> None:
+        if self.debug_file is not None:
+            self.debug_file.close()
+            self.debug_file = None
+
+
+def parse_config(path: str | None) -> Config:
+    config = Config()
+    if path is None:
+        return config
+
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = shlex.split(line, comments=True)
+            if not parts:
+                continue
+
+            key = parts[0]
+            values = parts[1:]
+            if key == "PocketTTSPython" and values:
+                config.python = values[0]
+            elif key == "PocketTTSLanguage" and values:
+                config.language = values[0]
+            elif key == "PocketTTSDefaultVoice" and values:
+                config.default_voice = values[0]
+            elif key == "PocketTTSTemperature" and values:
+                config.temperature = int(values[0]) / 100.0
+            elif key == "PocketTTSLsdDecodeSteps" and values:
+                config.lsd_decode_steps = int(values[0])
+            elif key == "PocketTTSEosThreshold" and values:
+                config.eos_threshold = int(values[0]) / 100.0
+            elif key == "PocketTTSFramesAfterEos" and values:
+                frames = int(values[0])
+                config.frames_after_eos = frames if frames >= 0 else None
+            elif key == "PocketTTSMaxTokens" and values:
+                config.max_tokens = int(values[0])
+            elif key == "PocketTTSQuantize" and values:
+                config.quantize = bool(int(values[0]))
+            elif key == "AddVoice" and len(values) >= 3:
+                config.voices.append((values[0], values[1].upper(), values[2]))
+
+    return config
+
+
+def maybe_reexec(config: Config, argv: list[str]) -> None:
+    if "--no-reexec" in argv:
+        return
+
+    configured_python = config.python
+    if not configured_python:
+        return
+
+    current = os.path.abspath(sys.executable)
+    if os.path.sep in configured_python:
+        target = os.path.abspath(configured_python)
+    else:
+        resolved = shutil.which(configured_python)
+        target = os.path.abspath(resolved) if resolved is not None else configured_python
+
+    if current == target:
+        return
+
+    os.execvp(configured_python, [configured_python, __file__, *argv[1:], "--no-reexec"])
+
+
+def read_message() -> tuple[str, int]:
+    lines = []
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            raise EOFError
+        if line == ".\n":
+            break
+        if line.startswith(".."):
+            line = line[1:]
+        lines.append(line)
+
+    text = "".join(lines)
+    if text.endswith("\n"):
+        text = text[:-1]
+    return text, len(lines)
+
+
+def receive_params(kind: str, ack: int, setter) -> bool:
+    print(f"{ack} OK RECEIVING {kind}SETTINGS", flush=True)
+    error = None
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            raise EOFError
+        if line == ".\n":
+            break
+        if "=" not in line:
+            error = "302 ERROR BAD SYNTAX"
+            continue
+        var, val = line.rstrip("\n").split("=", 1)
+        if not setter(var, val):
+            error = "303 ERROR INVALID PARAMETER OR VALUE"
+
+    if error is not None:
+        print(error, flush=True)
+        return False
+    return True
+
+
+def write_audio_chunk(chunk, sample_rate: int) -> None:
+    audio = chunk.detach().cpu().reshape(-1)
+    pcm = (
+        (audio.clamp(-1, 1) * 32767)
+        .to(__import__("torch").int16)
+        .contiguous()
+        .cpu()
+        .numpy()
+        .tobytes()
+    )
+    max_bytes = 10000
+    for offset in range(0, len(pcm), max_bytes):
+        payload = pcm[offset : offset + max_bytes]
+        num_samples = len(payload) // 2
+        sys.stdout.write("705-bits=16\n")
+        sys.stdout.write("705-num_channels=1\n")
+        sys.stdout.write(f"705-sample_rate={sample_rate}\n")
+        sys.stdout.write(f"705-num_samples={num_samples}\n")
+        sys.stdout.write("705-big_endian=0\n")
+        sys.stdout.write("705-AUDIO")
+        sys.stdout.flush()
+        sys.stdout.buffer.write(b"\0")
+        sys.stdout.buffer.write(escape_audio(payload))
+        sys.stdout.buffer.write(b"\n705 AUDIO\n")
+        sys.stdout.buffer.flush()
+
+
+def escape_audio(payload: bytes) -> bytes:
+    output = bytearray()
+    for byte in payload:
+        if byte in (0x0A, 0x7D):
+            output.append(0x7D)
+            output.append(byte ^ 0x20)
+        else:
+            output.append(byte)
+    return bytes(output)
+
+
+def strip_ssml(text: str) -> str:
+    return re.sub(r"<[^>]*>", "", text)
+
+
+def language_matches(requested: str, candidate: str) -> bool:
+    requested_lower = requested.lower().replace("_", "-")
+    candidate_lower = candidate.lower().replace("_", "-")
+    if requested_lower == candidate_lower:
+        return True
+    return requested_lower.split("-", 1)[0] == candidate_lower.split("-", 1)[0]
+
+
+def main() -> int:
+    config_path = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else None
+    config = parse_config(config_path)
+    maybe_reexec(config, sys.argv)
+
+    line = sys.stdin.readline()
+    if line != "INIT\n":
+        print("399-Server did not start with INIT", flush=False)
+        print("399 ERR CANT INIT MODULE", flush=True)
+        return 1
+
+    module = PocketTTSModule(config)
+    try:
+        status = module.initialize()
+    except Exception:
+        print(f"399-{traceback.format_exc()}", flush=False)
+        print("399 ERR CANT INIT MODULE", flush=True)
+        return 1
+
+    print(f"299-{status}", flush=False)
+    print("299 OK LOADED SUCCESSFULLY", flush=True)
+
+    try:
+        while True:
+            command = sys.stdin.readline()
+            if command == "":
+                return 1
+            command = command.rstrip("\n")
+
+            if command in {"SPEAK", "SOUND_ICON", "CHAR", "KEY"}:
+                print("202 OK RECEIVING MESSAGE", flush=True)
+                text, lines = read_message()
+                if command != "SPEAK" and lines > 1:
+                    print("305 DATA MORE THAN ONE LINE", flush=True)
+                    continue
+                module.speak(text, "TEXT" if command == "SPEAK" else command)
+            elif command == "STOP":
+                module.stop_requested = True
+            elif command == "PAUSE":
+                module.stop_requested = True
+                print("704 PAUSE", flush=True)
+            elif command.startswith("LIST VOICES"):
+                parts = command.split()
+                requested_language = parts[2] if len(parts) >= 3 else None
+                requested_variant = parts[3] if len(parts) >= 4 else None
+                module.list_voices(requested_language, requested_variant)
+            elif command == "SET":
+                if receive_params("", 203, module.set_parameter):
+                    print("203 OK SETTINGS RECEIVED", flush=True)
+            elif command == "AUDIO":
+                def set_audio(var: str, val: str) -> bool:
+                    return var != "audio_output_method" or val == "server"
+
+                if receive_params("AUDIO ", 207, set_audio):
+                    print("203 OK AUDIO INITIALIZED", flush=True)
+            elif command == "LOGLEVEL":
+                if receive_params("LOGLEVEL ", 207, lambda _var, _val: True):
+                    print("203 OK LOGLEVEL SET", flush=True)
+            elif command.startswith("DEBUG"):
+                parts = command.split(maxsplit=2)
+                if len(parts) >= 2 and parts[1] == "ON" and len(parts) == 3:
+                    module.debug_file = open(parts[2], "a", encoding="utf-8")
+                    module.debug_enabled = True
+                    print("200 OK DEBUGGING ON", flush=True)
+                elif len(parts) >= 2 and parts[1] == "OFF":
+                    module.close()
+                    module.debug_enabled = False
+                    print("200 OK DEBUGGING OFF", flush=True)
+                else:
+                    print("302 ERROR BAD SYNTAX", flush=True)
+            elif command == "QUIT":
+                module.close()
+                print("210 OK QUIT", flush=True)
+                return 0
+            else:
+                print("300 ERR UNKNOWN COMMAND", flush=True)
+    except EOFError:
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
