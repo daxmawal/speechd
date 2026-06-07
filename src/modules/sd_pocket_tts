@@ -596,7 +596,7 @@ def main() -> int:
                     print("203 OK SETTINGS RECEIVED", flush=True)
             elif command == "AUDIO":
                 def set_audio(var: str, val: str) -> bool:
-                    return var != "audio_output_method" or val == "server"
+                    return var == "audio_output_method" and val == "server"
 
                 if receive_params("AUDIO ", 207, set_audio):
                     print("203 OK AUDIO INITIALIZED", flush=True)
