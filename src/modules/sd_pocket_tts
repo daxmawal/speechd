@@ -27,6 +27,7 @@ import shlex
 import shutil
 import sys
 import traceback
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
@@ -164,12 +165,6 @@ class PocketTTSModule:
 
         return None
 
-    def has_voice_for_language(self, language: str) -> bool:
-        return any(
-            language_matches(language, voice_language)
-            for voice_language, _candidate_type, _voice_name in self.config.voices
-        )
-
     def is_allowed_synthesis_voice(self, voice: str) -> bool:
         if self.config.allow_external_voice_prompts:
             return True
@@ -222,7 +217,7 @@ class PocketTTSModule:
                 if val == "NULL":
                     self.settings.speechd_language = default_speechd_language(self.config.voices)
                     return True
-                if not self.has_voice_for_language(val):
+                if not is_valid_speechd_language(val):
                     return False
                 self.settings.speechd_language = val
                 return True
@@ -563,7 +558,17 @@ def escape_audio(payload: bytes) -> bytes:
 
 
 def strip_ssml(text: str) -> str:
-    return re.sub(r"<[^>]*>", "", text)
+    if "<" not in text or ">" not in text:
+        return text
+
+    for candidate in (text, f"<root>{text}</root>"):
+        try:
+            root = ET.fromstring(candidate)
+        except ET.ParseError:
+            continue
+        return "".join(root.itertext())
+
+    return text
 
 
 def default_speechd_language(voices: List[Tuple[str, str, str]]) -> Optional[str]:
@@ -576,6 +581,10 @@ def language_matches(requested: str, candidate: str) -> bool:
     if requested_lower == candidate_lower:
         return True
     return requested_lower.split("-", 1)[0] == candidate_lower.split("-", 1)[0]
+
+
+def is_valid_speechd_language(language: str) -> bool:
+    return re.fullmatch(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*", language) is not None
 
 
 def print_init_error(details: str) -> None:
