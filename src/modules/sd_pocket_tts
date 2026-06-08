@@ -27,10 +27,11 @@ import shlex
 import shutil
 import sys
 import traceback
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
+
+from module_utils import module_strip_ssml
 
 
 MAX_VOICE_STATES = 4
@@ -296,7 +297,7 @@ class PocketTTSModule:
         if message_type in {"CHAR", "KEY"} and (text == "space" or text.isspace()):
             text = "space"
         if message_type == "TEXT":
-            text = strip_ssml(text)
+            text = module_strip_ssml(text)
 
         if not text.strip():
             print("301 ERROR CANT SPEAK", flush=True)
@@ -586,20 +587,6 @@ def escape_audio(payload: bytes) -> bytes:
     return bytes(output)
 
 
-def strip_ssml(text: str) -> str:
-    if "<" not in text or ">" not in text:
-        return text
-
-    for candidate in (text, f"<root>{text}</root>"):
-        try:
-            root = ET.fromstring(candidate)
-        except ET.ParseError:
-            continue
-        return "".join(root.itertext())
-
-    return text
-
-
 def default_speechd_language(voices: List[Tuple[str, str, str]]) -> Optional[str]:
     return voices[0][0] if voices else None
 
@@ -730,7 +717,6 @@ def main() -> int:
                 print("300 ERR UNKNOWN COMMAND", flush=True)
     except EOFError:
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
