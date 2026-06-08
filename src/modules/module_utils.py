@@ -17,11 +17,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""Shared helpers for Python Speech Dispatcher output modules."""
-
-from __future__ import annotations
-
-
 def module_strip_ssml(message: str) -> str:
     out = []
     omit = False
