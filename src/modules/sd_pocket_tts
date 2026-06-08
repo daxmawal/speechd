@@ -31,7 +31,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
 
-from module_utils import module_strip_ssml
+from module_utils import module_strip_ssml as strip_ssml
 
 
 MAX_VOICE_STATES = 4
@@ -64,12 +64,6 @@ POCKET_TTS_CONFIG_KEYS = {
     "PocketTTSPython",
     "PocketTTSLanguage",
     "PocketTTSDefaultVoice",
-    "PocketTTSTemperature",
-    "PocketTTSLsdDecodeSteps",
-    "PocketTTSEosThreshold",
-    "PocketTTSFramesAfterEos",
-    "PocketTTSMaxTokens",
-    "PocketTTSQuantize",
 }
 
 SUPPORTED_LANGUAGES = {
@@ -90,12 +84,6 @@ class Config:
     debug: bool = False
     model_language: str = "english"
     default_voice: str = ""
-    temperature: float = 0.7
-    lsd_decode_steps: int = 1
-    eos_threshold: float = -4.0
-    frames_after_eos: Optional[int] = None
-    max_tokens: int = 50
-    quantize: bool = False
     voices: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
@@ -143,13 +131,7 @@ class PocketTTSModule:
         from pocket_tts import TTSModel
         from pocket_tts.default_parameters import get_default_voice_for_language
 
-        self.model = TTSModel.load_model(
-            language=self.config.model_language,
-            temp=self.config.temperature,
-            lsd_decode_steps=self.config.lsd_decode_steps,
-            eos_threshold=self.config.eos_threshold,
-            quantize=self.config.quantize,
-        )
+        self.model = TTSModel.load_model(language=self.config.model_language)
         if not self.default_voice:
             self.default_voice = get_default_voice_for_language(self.config.model_language)
         self.voice_state(self.default_voice)
@@ -297,7 +279,7 @@ class PocketTTSModule:
         if message_type in {"CHAR", "KEY"} and (text == "space" or text.isspace()):
             text = "space"
         if message_type == "TEXT":
-            text = module_strip_ssml(text)
+            text = strip_ssml(text)
 
         if not text.strip():
             print("301 ERROR CANT SPEAK", flush=True)
@@ -335,14 +317,7 @@ class PocketTTSModule:
         print("702 END", flush=True)
 
     def audio_stream(self, voice_state, text: str):
-        return iter(
-            self.model.generate_audio_stream(
-                voice_state,
-                text,
-                frames_after_eos=self.config.frames_after_eos,
-                max_tokens=self.config.max_tokens,
-            )
-        )
+        return iter(self.model.generate_audio_stream(voice_state, text))
 
     def close(self) -> None:
         if self.debug_file is not None:
@@ -392,31 +367,6 @@ def parse_config(path: Optional[str]) -> Config:
                 config.model_language = values[0]
             elif key == "PocketTTSDefaultVoice" and values:
                 config.default_voice = values[0]
-            elif key == "PocketTTSTemperature" and values:
-                config.temperature = parse_integer_option(
-                    path, line_number, key, values[0], minimum=0
-                ) / 100.0
-            elif key == "PocketTTSLsdDecodeSteps" and values:
-                config.lsd_decode_steps = parse_integer_option(
-                    path, line_number, key, values[0], minimum=1
-                )
-            elif key == "PocketTTSEosThreshold" and values:
-                config.eos_threshold = parse_integer_option(
-                    path, line_number, key, values[0]
-                ) / 100.0
-            elif key == "PocketTTSFramesAfterEos" and values:
-                frames = parse_integer_option(
-                    path, line_number, key, values[0], minimum=-1
-                )
-                config.frames_after_eos = frames if frames >= 0 else None
-            elif key == "PocketTTSMaxTokens" and values:
-                config.max_tokens = parse_integer_option(
-                    path, line_number, key, values[0], minimum=1
-                )
-            elif key == "PocketTTSQuantize" and values:
-                config.quantize = bool(
-                    parse_integer_option(path, line_number, key, values[0], choices={0, 1})
-                )
             elif key == "AddVoice":
                 config.voices.append(parse_voice_option(path, line_number, values))
             else:
@@ -452,7 +402,6 @@ def parse_integer_option(
     key: str,
     value: str,
     *,
-    minimum: Optional[int] = None,
     choices: Optional[Set[int]] = None,
 ) -> int:
     try:
@@ -460,8 +409,6 @@ def parse_integer_option(
     except ValueError as error:
         raise_config_error(path, line_number, f"{key} expects an integer, got {value!r}", error)
 
-    if minimum is not None and number < minimum:
-        raise_config_error(path, line_number, f"{key} must be >= {minimum}, got {number}")
     if choices is not None and number not in choices:
         allowed = ", ".join(str(choice) for choice in sorted(choices))
         raise_config_error(path, line_number, f"{key} must be one of {{{allowed}}}, got {number}")
