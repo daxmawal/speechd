@@ -18,6 +18,7 @@
 #
 
 def module_strip_ssml(message: str) -> str:
+    message = message.split("\0", 1)[0]
     out = []
     omit = False
     i = 0
