@@ -30,20 +30,19 @@
 import sys
 import traceback
 
-from module_process import module_process, module_send
+from module_process import module_process
 
 
 def config_path(argv):
-    for arg in argv[1:]:
-        if not arg.startswith("--"):
-            return arg
-    return None
+    return argv[1] if len(argv) >= 2 else None
 
 
-def init_error(error):
-    for line in str(error).splitlines():
-        module_send("399-%s\n", line)
-    module_send("399 ERR CANT INIT MODULE\n")
+def print_init_error(message):
+    if message is None:
+        message = "Unspecified initialization error\n"
+    sys.stdout.write("399-%s\n" % message)
+    sys.stdout.write("399 ERR CANT INIT MODULE\n")
+    sys.stdout.flush()
 
 
 def run_main(
@@ -61,39 +60,38 @@ def run_main(
         config = load_config(config_path(argv))
         if reexec is not None:
             reexec(config, argv)
-    except Exception as error:
-        config = None
-        config_error = error
-    else:
-        config_error = None
+    except Exception:
+        module_close(None)
+        return 1
 
     if sys.stdin.readline() != "INIT\n":
-        init_error("Server did not start with INIT")
-        return 1
-
-    if config_error is not None:
-        init_error(config_error)
-        return 1
+        sys.stderr.write("ERROR: Server did not start with INIT\n")
+        sys.stderr.flush()
+        module_close(None)
+        return 3
 
     module = None
     try:
         module = module_factory(config)
         status = module.initialize()
     except Exception:
-        init_error(traceback.format_exc())
-        call_module_close(module)
+        print_init_error(traceback.format_exc())
+        module_close(module)
         return 1
 
-    module_send("299-%s\n", status or success_message)
-    module_send("299 OK LOADED SUCCESSFULLY\n")
+    sys.stdout.write("299-%s\n" % (status or success_message))
+    sys.stdout.write("299 OK LOADED SUCCESSFULLY\n")
+    sys.stdout.flush()
+
     result = module_process(module, hard_exit=hard_exit)
     if result:
-        module_send("399 ERR MODULE CLOSED\n")
-        call_module_close(module)
+        sys.stdout.write("399 ERR MODULE CLOSED\n")
+        sys.stdout.flush()
+        module_close(module)
     return result
 
 
-def call_module_close(module):
+def module_close(module):
     close = getattr(module, "close", None)
     if close is not None:
         close()
