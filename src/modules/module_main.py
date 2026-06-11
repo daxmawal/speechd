@@ -48,7 +48,7 @@ def print_init_error(message):
 
 
 def run_main(
-    load_config: Callable[[str | None], Any],
+    module_config: Callable[[str | None], Any],
     module_factory: Callable[[Any], SPDModule],
     *,
     argv=None,
@@ -59,7 +59,7 @@ def run_main(
 
     # Read configuration
     try:
-        config = load_config(config_path(argv))
+        config = module_config(config_path(argv))
         if reexec is not None:
             reexec(config, argv)
     except Exception:
