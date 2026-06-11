@@ -137,7 +137,7 @@ BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 def cmd_speak(module, msgtype):
     global _module_should_stop
 
-    _print("202 OK RECEIVING MESSAGE")
+    module_send("202 OK RECEIVING MESSAGE\n")
 
     lines = []
     nlines = 0
@@ -161,7 +161,7 @@ def cmd_speak(module, msgtype):
         return
 
     if msgtype != speechd_types.SPD_MSGTYPE_TEXT and nlines > 1:
-        _print(BAD_MULTILINE)
+        module_send("%s\n", BAD_MULTILINE)
         return
 
     if msgtype in {speechd_types.SPD_MSGTYPE_KEY, speechd_types.SPD_MSGTYPE_CHAR} and text == "space":
@@ -199,11 +199,11 @@ def cmd_speak_key(module):
 
 
 def module_speak_ok():
-    _print("200 OK SPEAKING")
+    module_send("200 OK SPEAKING\n")
 
 
 def module_speak_error():
-    _print("301 ERROR CANT SPEAK")
+    module_send("301 ERROR CANT SPEAK\n")
 
 
 def cmd_stop(module):
@@ -221,7 +221,7 @@ def cmd_pause(module):
 def cmd_list_voices(module, line):
     voices = module.module_list_voices()
     if not voices:
-        _print("304 CANT LIST VOICES")
+        module_send("304 CANT LIST VOICES\n")
         return
 
     parts = line.split()
@@ -263,7 +263,7 @@ def cmd_list_voices(module, line):
 
 
 def cmd_params(ack, type_name, set_func):
-    _print("%u OK RECEIVING %sSETTINGS" % (ack, type_name))
+    module_send("%u OK RECEIVING %sSETTINGS\n", ack, type_name)
     err = None
 
     while True:
@@ -274,7 +274,7 @@ def cmd_params(ack, type_name, set_func):
         if line == ".\n":
             if err is None:
                 return 0
-            _print(err)
+            module_send("%s\n", err)
             return -1
 
         stripped = line.rstrip("\n")
@@ -294,7 +294,7 @@ def cmd_params(ack, type_name, set_func):
 def cmd_set(module):
     if cmd_params(203, "", module.module_set) != 0:
         return
-    _print("203 OK SETTINGS RECEIVED")
+    module_send("203 OK SETTINGS RECEIVED\n")
 
 
 def cmd_audio(module):
@@ -308,19 +308,19 @@ def cmd_audio(module):
                 ret = 0 if _setter_succeeded(audio_init()) else -1
 
     if ret == 0:
-        _print("203 OK AUDIO INITIALIZED")
+        module_send("203 OK AUDIO INITIALIZED\n")
 
 
 def cmd_loglevel(module):
     if cmd_params(207, "LOGLEVEL ", module_loglevel_set) != 0:
         return
-    _print("203 OK LOGLEVEL SET")
+    module_send("203 OK LOGLEVEL SET\n")
 
 
 def cmd_debug(module, line):
     parts = line.split()
     if len(parts) < 2 or parts[0] != "DEBUG":
-        _print(BAD_SYNTAX)
+        module_send("%s\n", BAD_SYNTAX)
         return
 
     enable = False
@@ -328,22 +328,22 @@ def cmd_debug(module, line):
     if parts[1] == "ON":
         enable = True
         if len(parts) < 3:
-            _print(BAD_SYNTAX)
+            module_send("%s\n", BAD_SYNTAX)
             return
         filename = parts[2]
     elif parts[1] != "OFF":
-        _print(BAD_SYNTAX)
+        module_send("%s\n", BAD_SYNTAX)
         return
 
     if module_debug(enable, filename) != 0:
-        _print("303 CANT OPEN CUSTOM DEBUG FILE")
+        module_send("303 CANT OPEN CUSTOM DEBUG FILE\n")
     else:
-        _print("200 OK DEBUGGING %s" % parts[1])
+        module_send("200 OK DEBUGGING %s\n", parts[1])
 
 
 def cmd_quit(module):
     _call_module(module, "module_close")
-    _print("210 OK QUIT")
+    module_send("210 OK QUIT\n")
 
 
 def module_process(module, fd=None, block=True):
@@ -385,25 +385,21 @@ def module_process(module, fd=None, block=True):
                 cmd_quit(module)
                 return 0
             else:
-                _print("300 ERR UNKNOWN COMMAND")
+                module_send("300 ERR UNKNOWN COMMAND\n")
     finally:
         _current_module = previous_module
 
 
 def module_report_event_begin():
-    _print("701 BEGIN")
+    module_send("701 BEGIN\n")
 
 
 def module_report_event_end():
-    _print("702 END")
+    module_send("702 END\n")
 
 
 def module_report_event_stop():
-    _print("703 STOP")
-
-
-def _print(line):
-    module_send("%s\n", line)
+    module_send("703 STOP\n")
 
 
 def _readline(block):
