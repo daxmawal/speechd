@@ -72,12 +72,12 @@ def module_audio_set(cur_item, cur_value):
         "audio_pulse_min_length": 5,
         # 6 reserved for speech-dispatcher module name
     }
-    index = audio_parameters.get(cur_item)
-    if index is None:
+    idx = audio_parameters.get(cur_item)
+    if idx is None:
         # Unknown parameter
         return -1
 
-    module_audio_pars[index] = None if cur_value == "NULL" else cur_value
+    module_audio_pars[idx] = None if cur_value == "NULL" else cur_value
     return 0
 
 

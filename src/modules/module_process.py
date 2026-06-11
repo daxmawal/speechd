@@ -33,24 +33,24 @@ import threading
 from module_utils import module_audio_set, module_debug, module_loglevel_set
 import speechd_types
 
-_module_stdout_lock = threading.Lock()
-_audio_server = False
+module_stdout_mutex = threading.Lock()
+audio_server = False
 _current_module = None
-_module_should_stop = False
+module_should_stop = False
 
 # This sends some text to the server, taking the mutex to avoid intermixing
 # between multi-line answers and asynchronous sends.
-def module_send(fmt, *args):
+def module_send(format, *args):
     if args:
-        fmt = fmt % args
-    with _module_stdout_lock:
-        sys.stdout.write(fmt)
+        format = format % args
+    with module_stdout_mutex:
+        sys.stdout.write(format)
         sys.stdout.flush()
 
 
 def module_audio_set_server():
-    global _audio_server
-    _audio_server = True
+    global audio_server
+    audio_server = True
 
 
 def module_audio_set_through_server(cur_item, cur_value):
@@ -64,8 +64,7 @@ def module_audio_set_through_server(cur_item, cur_value):
 
 
 def module_tts_output_send_server(track, format):
-    sample_size = track.num_channels * track.bits // 8
-    size = track.num_samples * sample_size
+    size = track.num_channels * track.num_samples * track.bits // 8
     header = (
         "705-bits=%d\n"
         "705-num_channels=%d\n"
@@ -81,12 +80,15 @@ def module_tts_output_send_server(track, format):
         format,
     )
 
-    with _module_stdout_lock:
+    with module_stdout_mutex:
         sys.stdout.buffer.write(header.encode())
         sys.stdout.buffer.write(b"\0")
-        for byte in track.samples[:size]:
-            if byte in (0x0A, 0x7D):
-                sys.stdout.buffer.write(bytes((0x7D, byte ^ 0x20)))
+        p = track.samples[:size]
+        escape = 0x7D
+        invert = 1 << 5
+        for byte in p:
+            if byte in (0x0A, escape):
+                sys.stdout.buffer.write(bytes((escape, byte ^ invert)))
             else:
                 sys.stdout.buffer.write(bytes((byte,)))
         sys.stdout.buffer.write(b"\n705 AUDIO\n")
@@ -99,32 +101,31 @@ MAX_CHUNK = 10000
 
 
 def module_tts_output_server(track, format):
+    mytrack = speechd_types.AudioTrack(
+        bits=track.bits,
+        num_channels=track.num_channels,
+        sample_rate=track.sample_rate,
+        num_samples=track.num_samples,
+        samples=track.samples,
+    )
     samplepos = 0
     sample_size = track.num_channels * track.bits // 8
 
     while samplepos < track.num_samples:
-        if _module_should_stop:
+        if module_should_stop:
             break
 
-        chunk_samples = MAX_CHUNK // sample_size
-        if chunk_samples > track.num_samples - samplepos:
-            chunk_samples = track.num_samples - samplepos
+        num_samples = MAX_CHUNK // sample_size
+        if num_samples > track.num_samples - samplepos:
+            num_samples = track.num_samples - samplepos
 
         start = samplepos * sample_size
-        end = start + chunk_samples * sample_size
-        samplepos += chunk_samples
+        end = start + num_samples * sample_size
+        samplepos += num_samples
 
-        mytrack = speechd_types.AudioTrack(
-            bits=track.bits,
-            num_channels=track.num_channels,
-            sample_rate=track.sample_rate,
-            num_samples=chunk_samples,
-            samples=track.samples[start:end],
-        )
-        module_tts_output_send_server(
-            mytrack,
-            format,
-        )
+        mytrack.num_samples = num_samples
+        mytrack.samples = track.samples[start:end]
+        module_tts_output_send_server(mytrack, format)
 
         if _current_module is not None:
             module_process(_current_module, block=False)
@@ -139,7 +140,7 @@ BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
 BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 
 def cmd_speak(module, msgtype):
-    global _module_should_stop
+    global module_should_stop
 
     module_send("202 OK RECEIVING MESSAGE\n")
 
@@ -159,8 +160,9 @@ def cmd_speak(module, msgtype):
     text = "".join(lines)
     if text.endswith("\n"):
         text = text[:-1]
+    text_len = len(text)
 
-    if not text:
+    if not text_len:
         module_speak_error()
         return
 
@@ -170,16 +172,17 @@ def cmd_speak(module, msgtype):
 
     if msgtype in {speechd_types.SPD_MSGTYPE_KEY, speechd_types.SPD_MSGTYPE_CHAR} and text == "space":
         text = " "
+        text_len = 1
 
-    _module_should_stop = False
+    module_should_stop = False
     speak_sync = getattr(module, "module_speak_sync", None)
     if speak_sync is not None:
-        speak_sync(text, len(text), msgtype)
+        speak_sync(text, text_len, msgtype)
         return
 
-    with _module_stdout_lock:
-        result = module.module_speak(text, len(text), msgtype)
-        if result is not None and result > 0:
+    with module_stdout_mutex:
+        ret = module.module_speak(text, text_len, msgtype)
+        if ret is not None and ret > 0:
             sys.stdout.write("200 OK SPEAKING\n")
         else:
             sys.stdout.write("301 ERROR CANT SPEAK\n")
@@ -211,14 +214,14 @@ def module_speak_error():
 
 
 def cmd_stop(module):
-    global _module_should_stop
-    _module_should_stop = True
+    global module_should_stop
+    module_should_stop = True
     _call_module(module, "module_stop")
 
 
 def cmd_pause(module):
-    global _module_should_stop
-    _module_should_stop = True
+    global module_should_stop
+    module_should_stop = True
     _call_module(module, "module_pause")
 
 
@@ -228,12 +231,12 @@ def cmd_list_voices(module, line):
         module_send("304 CANT LIST VOICES\n")
         return
 
-    parts = line.split()
-    requested_language = parts[2] if len(parts) >= 3 else None
-    requested_variant = parts[3] if len(parts) >= 4 else None
+    dumb = line.split()
+    requested_language = dumb[2] if len(dumb) >= 3 else None
+    requested_variant = dumb[3] if len(dumb) >= 4 else None
     one = False
 
-    with _module_stdout_lock:
+    with module_stdout_mutex:
         for voice in voices:
             name = voice.name
             language = voice.language
@@ -248,8 +251,12 @@ def cmd_list_voices(module, line):
             if requested_language:
                 if requested_language.lower() != language.lower():
                     # Not exactly the requested locale, but maybe the language?
-                    language_prefix = language.split("-", 1)[0]
-                    if requested_language.lower() != language_prefix.lower():
+                    dash = language.find("-")
+                    langlen = dash if dash != -1 else len(language)
+                    if (
+                        len(requested_language) != langlen
+                        or requested_language.lower() != language[:langlen].lower()
+                    ):
                         # Not the requested language
                         continue
                 if requested_variant and requested_variant.lower() != variant.lower():
@@ -266,8 +273,8 @@ def cmd_list_voices(module, line):
         sys.stdout.flush()
 
 
-def cmd_params(ack, type_name, set_func):
-    module_send("%u OK RECEIVING %sSETTINGS\n", ack, type_name)
+def cmd_params(ack, type, set):
+    module_send("%u OK RECEIVING %sSETTINGS\n", ack, type)
     err = None
 
     while True:
@@ -281,17 +288,17 @@ def cmd_params(ack, type_name, set_func):
             module_send("%s\n", err)
             return -1
 
-        stripped = line.rstrip("\n")
-        if "=" not in stripped:
+        line = line.rstrip("\n")
+        if "=" not in line:
             err = BAD_SYNTAX
             continue
 
-        var, val = stripped.split("=", 1)
+        var, val = line.split("=", 1)
         if not var or val == "":
             err = BAD_SYNTAX
             continue
 
-        if set_func(var, val) != 0:
+        if set(var, val) != 0:
             err = BAD_PARAM
 
 
@@ -302,20 +309,20 @@ def cmd_set(module):
 
 
 def cmd_audio(module):
-    if _audio_server:
+    if audio_server:
         ret = cmd_params(207, "AUDIO ", module_audio_set_through_server)
     else:
         ret = cmd_params(207, "AUDIO ", module_audio_set)
         if ret == 0:
             audio_init = getattr(module, "module_audio_init", None)
             if audio_init is not None:
-                result = audio_init()
-                if isinstance(result, bool):
-                    ret = 0 if result else -1
-                elif isinstance(result, int):
-                    ret = 0 if result == 0 else -1
+                ret = audio_init()
+                if isinstance(ret, bool):
+                    ret = 0 if ret else -1
+                elif isinstance(ret, int):
+                    ret = 0 if ret == 0 else -1
                 else:
-                    ret = 0 if result else -1
+                    ret = 0 if ret else -1
 
     if ret == 0:
         module_send("203 OK AUDIO INITIALIZED\n")
@@ -328,27 +335,33 @@ def cmd_loglevel(module):
 
 
 def cmd_debug(module, line):
-    parts = line.split()
-    if len(parts) < 2 or parts[0] != "DEBUG":
+    save = line.split()
+    if len(save) < 2:
         module_send("%s\n", BAD_SYNTAX)
         return
 
+    debug = save[0]
+    if debug != "DEBUG":
+        module_send("%s\n", BAD_SYNTAX)
+        return
+
+    on = save[1]
     enable = False
-    filename = None
-    if parts[1] == "ON":
+    file = None
+    if on == "ON":
         enable = True
-        if len(parts) < 3:
+        if len(save) < 3:
             module_send("%s\n", BAD_SYNTAX)
             return
-        filename = parts[2]
-    elif parts[1] != "OFF":
+        file = save[2]
+    elif on != "OFF":
         module_send("%s\n", BAD_SYNTAX)
         return
 
-    if module_debug(enable, filename) != 0:
+    if module_debug(enable, file) != 0:
         module_send("303 CANT OPEN CUSTOM DEBUG FILE\n")
     else:
-        module_send("200 OK DEBUGGING %s\n", parts[1])
+        module_send("200 OK DEBUGGING %s\n", on)
 
 
 def cmd_quit(module):
