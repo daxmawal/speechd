@@ -30,6 +30,7 @@ import select
 import sys
 import threading
 
+from module_utils import module_audio_set, module_debug, module_loglevel_set
 import speechd_types
 
 _module_stdout_lock = threading.Lock()
@@ -261,7 +262,7 @@ def cmd_list_voices(module, line):
         sys.stdout.flush()
 
 
-def cmd_params(module, ack, type_name, set_func):
+def cmd_params(ack, type_name, set_func):
     _print("%u OK RECEIVING %sSETTINGS" % (ack, type_name))
     err = None
 
@@ -286,21 +287,21 @@ def cmd_params(module, ack, type_name, set_func):
             err = BAD_SYNTAX
             continue
 
-        if set_func(module, var, val) != 0:
+        if set_func(var, val) != 0:
             err = BAD_PARAM
 
 
 def cmd_set(module):
-    if cmd_params(module, 203, "", _module_set) != 0:
+    if cmd_params(203, "", module.module_set) != 0:
         return
     _print("203 OK SETTINGS RECEIVED")
 
 
 def cmd_audio(module):
     if _audio_server:
-        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set_through_server)
+        ret = cmd_params(207, "AUDIO ", module_audio_set_through_server)
     else:
-        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
+        ret = cmd_params(207, "AUDIO ", module_audio_set)
         if ret == 0:
             audio_init = getattr(module, "module_audio_init", None)
             if audio_init is not None:
@@ -311,7 +312,7 @@ def cmd_audio(module):
 
 
 def cmd_loglevel(module):
-    if cmd_params(module, 207, "LOGLEVEL ", _module_loglevel_set) != 0:
+    if cmd_params(207, "LOGLEVEL ", module_loglevel_set) != 0:
         return
     _print("203 OK LOGLEVEL SET")
 
@@ -334,7 +335,7 @@ def cmd_debug(module, line):
         _print(BAD_SYNTAX)
         return
 
-    if module.module_debug(enable, filename) != 0:
+    if module_debug(enable, filename) != 0:
         _print("303 CANT OPEN CUSTOM DEBUG FILE")
     else:
         _print("200 OK DEBUGGING %s" % parts[1])
@@ -438,31 +439,3 @@ def _call_module(module, name, *args):
     if handler is not None:
         return handler(*args)
     return None
-
-
-def _module_set(module, var, val):
-    return module.module_set(var, val)
-
-
-def _module_audio_set_through_server(_module, var, val):
-    return module_audio_set_through_server(var, val)
-
-
-def _module_audio_set(module, var, val):
-    audio_set = getattr(module, "module_audio_set", None)
-    if audio_set is not None:
-        return audio_set(var, val)
-    return module_audio_set_through_server(var, val)
-
-
-def _module_loglevel_set(module, var, val):
-    loglevel_set = getattr(module, "module_loglevel_set", None)
-    if loglevel_set is not None:
-        return loglevel_set(var, val)
-    if var != "log_level":
-        return -1
-    try:
-        int(val)
-    except ValueError:
-        return -1
-    return 0
