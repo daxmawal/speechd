@@ -33,6 +33,7 @@ import threading
 import speechd_types
 
 _module_stdout_lock = threading.Lock()
+_audio_server = False
 _current_module = None
 _module_should_stop = False
 
@@ -44,6 +45,11 @@ def module_send(fmt, *args):
     with _module_stdout_lock:
         sys.stdout.write(fmt)
         sys.stdout.flush()
+
+
+def module_audio_set_server():
+    global _audio_server
+    _audio_server = True
 
 
 def module_audio_set_through_server(cur_item, cur_value):
@@ -291,11 +297,14 @@ def cmd_set(module):
 
 
 def cmd_audio(module):
-    ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
-    if ret == 0:
-        audio_init = getattr(module, "module_audio_init", None)
-        if audio_init is not None:
-            ret = 0 if _setter_succeeded(audio_init()) else -1
+    if _audio_server:
+        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set_through_server)
+    else:
+        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
+        if ret == 0:
+            audio_init = getattr(module, "module_audio_init", None)
+            if audio_init is not None:
+                ret = 0 if _setter_succeeded(audio_init()) else -1
 
     if ret == 0:
         _print("203 OK AUDIO INITIALIZED")
