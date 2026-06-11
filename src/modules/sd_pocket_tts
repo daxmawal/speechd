@@ -23,6 +23,14 @@ import shutil
 import sys
 import traceback
 
+from module_process import (
+    MESSAGE_TEXT,
+    init_error,
+    languages_match,
+    reply,
+    run,
+    write_audio_pcm,
+)
 from module_utils import module_strip_ssml
 
 
@@ -123,7 +131,7 @@ class PocketTTSModule:
                 return
 
     def speak(self, text, message_type):
-        if message_type == "TEXT":
+        if message_type == MESSAGE_TEXT:
             text = module_strip_ssml(text)
         elif text == "space" or text.isspace():
             text = "space"
@@ -151,52 +159,7 @@ class PocketTTSModule:
         reply("702 END")
 
     def list_voices(self):
-        if not self.config["voices"]:
-            reply("304 CANT LIST VOICES")
-            return
-
-        for language, voice_type, voice in self.config["voices"]:
-            print(f"200-{voice}\t{language}\t{voice_type}", flush=False)
-        reply("200 OK VOICE LIST SENT")
-
-
-def languages_match(requested, candidate):
-    requested = requested.lower().replace("_", "-")
-    candidate = candidate.lower().replace("_", "-")
-    return requested == candidate or requested.split("-", 1)[0] == candidate.split("-", 1)[0]
-
-
-def read_message():
-    lines = []
-    while True:
-        line = sys.stdin.readline()
-        if line == "":
-            raise EOFError
-        if line == ".\n":
-            break
-        if line.startswith(".."):
-            line = line[1:]
-        lines.append(line)
-
-    text = "".join(lines)
-    return text[:-1] if text.endswith("\n") else text, len(lines)
-
-
-def receive_settings(status, label, setter):
-    reply(f"{status} OK RECEIVING {label}SETTINGS")
-    ok = True
-    while True:
-        line = sys.stdin.readline()
-        if line == "":
-            raise EOFError
-        if line == ".\n":
-            break
-        if "=" not in line:
-            ok = False
-            continue
-        var, val = line.rstrip("\n").split("=", 1)
-        ok = setter(var, val) and ok
-    return ok
+        return self.config["voices"]
 
 
 def volume_gain(volume):
@@ -215,38 +178,7 @@ def write_audio_chunk(chunk, sample_rate, volume):
         .tobytes()
     )
 
-    for offset in range(0, len(pcm), 10000):
-        chunk = pcm[offset : offset + 10000]
-        payload = escape_audio(chunk)
-        print("705-bits=16")
-        print("705-num_channels=1")
-        print(f"705-sample_rate={sample_rate}")
-        print(f"705-num_samples={len(chunk) // 2}")
-        print("705-big_endian=0")
-        print("705-AUDIO", end="", flush=True)
-        sys.stdout.buffer.write(b"\0" + payload + b"\n705 AUDIO\n")
-        sys.stdout.buffer.flush()
-
-
-def escape_audio(payload):
-    escaped = bytearray()
-    for byte in payload:
-        if byte in (0x0A, 0x7D):
-            escaped.append(0x7D)
-            escaped.append(byte ^ 0x20)
-        else:
-            escaped.append(byte)
-    return bytes(escaped)
-
-
-def reply(line):
-    print(line, flush=True)
-
-
-def init_error(error):
-    for line in str(error).splitlines():
-        print(f"399-{line}", flush=False)
-    reply("399 ERR CANT INIT MODULE")
+    write_audio_pcm(pcm, sample_rate)
 
 
 def config_path(argv):
@@ -284,48 +216,7 @@ def main():
     reply("299-Pocket TTS initialized successfully.")
     reply("299 OK LOADED SUCCESSFULLY")
 
-    try:
-        while True:
-            command = sys.stdin.readline()
-            if command == "":
-                return 1
-            command = command.rstrip("\n")
-
-            if command in {"SPEAK", "CHAR", "KEY", "SOUND_ICON"}:
-                reply("202 OK RECEIVING MESSAGE")
-                text, lines = read_message()
-                if command in {"CHAR", "KEY", "SOUND_ICON"} and lines > 1:
-                    reply("305 DATA MORE THAN ONE LINE")
-                elif command == "SOUND_ICON":
-                    reply("301 ERROR CANT SPEAK")
-                else:
-                    module.speak(text, "TEXT" if command == "SPEAK" else command)
-            elif command in {"STOP", "PAUSE"}:
-                continue
-            elif command.startswith("LIST VOICES"):
-                module.list_voices()
-            elif command == "SET":
-                if receive_settings(203, "", module.set_parameter):
-                    reply("203 OK SETTINGS RECEIVED")
-                else:
-                    reply("303 ERROR INVALID PARAMETER OR VALUE")
-            elif command == "AUDIO":
-                receive_settings(207, "AUDIO ", lambda _var, _val: True)
-                reply("203 OK AUDIO INITIALIZED")
-            elif command == "LOGLEVEL":
-                receive_settings(207, "LOGLEVEL ", lambda _var, _val: True)
-                reply("203 OK LOGLEVEL SET")
-            elif command.startswith("DEBUG"):
-                reply("200 OK DEBUGGING ON" if " ON" in command else "200 OK DEBUGGING OFF")
-            elif command == "QUIT":
-                reply("210 OK QUIT")
-                sys.stdout.flush()
-                sys.stderr.flush()
-                os._exit(0)
-            else:
-                reply("300 ERR UNKNOWN COMMAND")
-    except EOFError:
-        return 1
+    return run(module, hard_exit=True)
 
 
 if __name__ == "__main__":
