@@ -31,7 +31,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
-from module_process import module_process
+from module_utils import module_loop
 from spd_module_main import SPDModule
 
 
@@ -92,7 +92,7 @@ def run_main(
     sys.stdout.flush()
 
     # Run module
-    ret = module_process(module, hard_exit=hard_exit)
+    ret = module_loop(module, hard_exit=hard_exit)
     if ret:
         sys.stdout.write("399 ERR MODULE CLOSED\n")
         sys.stdout.flush()

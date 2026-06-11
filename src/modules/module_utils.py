@@ -17,6 +17,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
+from module_process import module_process
+
+
+def module_loop(module, *, hard_exit=False):
+    return module_process(module, block=True, hard_exit=hard_exit)
+
+
 def module_strip_ssml(message: str) -> str:
     message = message.split("\0", 1)[0]
     out = []
