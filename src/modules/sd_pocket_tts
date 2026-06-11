@@ -319,7 +319,9 @@ def main():
                 reply("200 OK DEBUGGING ON" if " ON" in command else "200 OK DEBUGGING OFF")
             elif command == "QUIT":
                 reply("210 OK QUIT")
-                return 0
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(0)
             else:
                 reply("300 ERR UNKNOWN COMMAND")
     except EOFError:
