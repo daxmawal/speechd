@@ -28,6 +28,7 @@
 
 import select
 import sys
+import threading
 
 import speechd_types
 
@@ -37,21 +38,26 @@ BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 
 MAX_CHUNK = 10000
 
+_module_stdout_lock = threading.Lock()
 _current_module = None
 _module_should_stop = False
 
-
+# This sends some text to the server, taking the mutex to avoid intermixing
+# between multi-line answers and asynchronous sends.
 def module_send(fmt, *args):
     if args:
         fmt = fmt % args
-    sys.stdout.write(fmt)
-    sys.stdout.flush()
+    with _module_stdout_lock:
+        sys.stdout.write(fmt)
+        sys.stdout.flush()
 
 
 def module_audio_set_through_server(cur_item, cur_value):
     if cur_item != "audio_output_method":
+        # We only support the audio output method parameter
         return -1
     if cur_value != "server":
+        # We only support server audio output method
         return -1
     return 0
 
