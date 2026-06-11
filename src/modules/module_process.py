@@ -26,7 +26,6 @@
 # SUCH DAMAGE.
 #
 
-import os
 import select
 import sys
 
@@ -313,7 +312,7 @@ def cmd_quit(module):
     _print("210 OK QUIT")
 
 
-def module_process(module: SPDModule, fd=None, block=True, hard_exit=False):
+def module_process(module: SPDModule, fd=None, block=True):
     del fd
 
     global _current_module
@@ -350,10 +349,6 @@ def module_process(module: SPDModule, fd=None, block=True, hard_exit=False):
                 cmd_debug(module, line.rstrip("\n"))
             elif line == "QUIT\n":
                 cmd_quit(module)
-                if hard_exit:
-                    sys.stdout.flush()
-                    sys.stderr.flush()
-                    os._exit(0)
                 return 0
             else:
                 _print("300 ERR UNKNOWN COMMAND")

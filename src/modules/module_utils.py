@@ -20,8 +20,8 @@
 from module_process import module_process
 
 
-def module_loop(module, *, hard_exit=False):
-    return module_process(module, block=True, hard_exit=hard_exit)
+def module_loop(module):
+    return module_process(module, block=True)
 
 
 def module_strip_ssml(message: str) -> str:

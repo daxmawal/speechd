@@ -53,7 +53,6 @@ def run_main(
     *,
     argv=None,
     reexec=None,
-    hard_exit=False,
 ):
     argv = sys.argv if argv is None else argv
     configfile = config_path(argv)
@@ -92,7 +91,7 @@ def run_main(
     sys.stdout.flush()
 
     # Run module
-    ret = module_loop(module, hard_exit=hard_exit)
+    ret = module_loop(module)
     if ret:
         sys.stdout.write("399 ERR MODULE CLOSED\n")
         sys.stdout.flush()
