@@ -30,6 +30,7 @@ import os
 import select
 import sys
 
+from spd_module_main import SPDModule
 from speechd_types import (
     SPD_MSGTYPE_CHAR,
     SPD_MSGTYPE_KEY,
@@ -142,15 +143,15 @@ def cmd_speak(module, msgtype):
         text = " "
 
     _module_should_stop = False
-    speak_sync = getattr(module, "speak_sync", None)
+    speak_sync = getattr(module, "module_speak_sync", None)
     if speak_sync is not None:
         speak_sync(text, len(text), msgtype)
         return
 
-    result = module.speak(text, msgtype)
+    result = module.module_speak(text, len(text), msgtype)
     if result is None:
         return
-    if result:
+    if result > 0:
         module_speak_ok()
     else:
         module_speak_error()
@@ -183,17 +184,17 @@ def module_speak_error():
 def cmd_stop(module):
     global _module_should_stop
     _module_should_stop = True
-    _call_module(module, "stop")
+    _call_module(module, "module_stop")
 
 
 def cmd_pause(module):
     global _module_should_stop
     _module_should_stop = True
-    _call_module(module, "pause")
+    _call_module(module, "module_pause")
 
 
 def cmd_list_voices(module, line):
-    voices = module.list_voices()
+    voices = module.module_list_voices()
     if not voices:
         _print("304 CANT LIST VOICES")
         return
@@ -203,7 +204,10 @@ def cmd_list_voices(module, line):
     requested_variant = parts[3] if len(parts) >= 4 else None
     one = False
 
-    for language, variant, name in voices:
+    for voice in voices:
+        name = voice.name
+        language = voice.language
+        variant = voice.variant
         if not name:
             continue
 
@@ -265,7 +269,7 @@ def cmd_audio(module):
     else:
         ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
         if ret == 0:
-            audio_init = getattr(module, "audio_init", None)
+            audio_init = getattr(module, "module_audio_init", None)
             if audio_init is not None:
                 ret = 0 if _setter_succeeded(audio_init()) else -1
 
@@ -297,7 +301,7 @@ def cmd_debug(module, line):
         _print(BAD_SYNTAX)
         return
 
-    debug = getattr(module, "debug", None)
+    debug = getattr(module, "module_debug", None)
     if debug is not None and not _setter_succeeded(debug(enable, filename)):
         _print("303 CANT OPEN CUSTOM DEBUG FILE")
     else:
@@ -305,11 +309,11 @@ def cmd_debug(module, line):
 
 
 def cmd_quit(module):
-    _call_module(module, "close")
+    _call_module(module, "module_close")
     _print("210 OK QUIT")
 
 
-def module_process(module, fd=None, block=True, hard_exit=False):
+def module_process(module: SPDModule, fd=None, block=True, hard_exit=False):
     del fd
 
     global _current_module
@@ -441,7 +445,7 @@ def _call_module(module, name, *args):
 
 
 def _module_set(module, var, val):
-    return module.set_parameter(var, val)
+    return module.module_set(var, val)
 
 
 def _module_audio_set_through_server(_module, var, val):
@@ -449,14 +453,14 @@ def _module_audio_set_through_server(_module, var, val):
 
 
 def _module_audio_set(module, var, val):
-    audio_set = getattr(module, "audio_set", None)
+    audio_set = getattr(module, "module_audio_set", None)
     if audio_set is not None:
         return audio_set(var, val)
     return module_audio_set_through_server(var, val)
 
 
 def _module_loglevel_set(module, var, val):
-    loglevel_set = getattr(module, "loglevel_set", None)
+    loglevel_set = getattr(module, "module_loglevel_set", None)
     if loglevel_set is not None:
         return loglevel_set(var, val)
     if var != "log_level":

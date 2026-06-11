@@ -29,8 +29,11 @@
 
 import sys
 import traceback
+from collections.abc import Callable
+from typing import Any
 
 from module_process import module_process
+from spd_module_main import SPDModule
 
 
 def config_path(argv):
@@ -46,8 +49,8 @@ def print_init_error(message):
 
 
 def run_main(
-    load_config,
-    module_factory,
+    load_config: Callable[[str | None], Any],
+    module_factory: Callable[[Any], SPDModule],
     *,
     argv=None,
     reexec=None,
@@ -73,7 +76,7 @@ def run_main(
     module = None
     try:
         module = module_factory(config)
-        status = module.initialize()
+        status = module.module_init()
     except Exception:
         print_init_error(traceback.format_exc())
         module_close(module)
@@ -92,6 +95,5 @@ def run_main(
 
 
 def module_close(module):
-    close = getattr(module, "close", None)
-    if close is not None:
-        close()
+    if module is not None:
+        module.module_close()

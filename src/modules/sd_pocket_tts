@@ -33,10 +33,10 @@ from module_process import (
     module_tts_output_server,
 )
 from module_utils import module_strip_ssml
-from speechd_types import SPD_MSGTYPE_SOUND_ICON, SPD_MSGTYPE_TEXT
+from speechd_types import SPD_MSGTYPE_SOUND_ICON, SPD_MSGTYPE_TEXT, SPDVoice
 
 
-def parse_config(path):
+def module_config(path):
     config = {
         "python": "python3",
         "language": "english",
@@ -91,7 +91,7 @@ class PocketTTSModule:
         self.voice_state_name = None
         self.volume = 0
 
-    def initialize(self):
+    def module_init(self):
         from pocket_tts import TTSModel
         from pocket_tts.default_parameters import get_default_voice_for_language
 
@@ -107,12 +107,12 @@ class PocketTTSModule:
             self.voice_state_name = self.voice
         return self.voice_state
 
-    def set_parameter(self, var, val):
+    def module_set(self, var, val):
         if var == "volume":
             try:
                 self.volume = max(-100, min(100, int(val)))
             except ValueError:
-                return False
+                return -1
         elif var == "synthesis_voice":
             self.voice = self.default_voice if val == "NULL" else val
             self.voice_state = None
@@ -120,7 +120,9 @@ class PocketTTSModule:
             self.select_configured_voice(language=val)
         elif var == "voice":
             self.select_configured_voice(voice_type=val)
-        return True
+        else:
+            return -1
+        return 0
 
     def select_configured_voice(self, language=None, voice_type=None):
         for candidate_language, candidate_type, candidate_voice in self.config["voices"]:
@@ -132,7 +134,7 @@ class PocketTTSModule:
                     self.voice_state = None
                 return
 
-    def speak(self, text, message_type):
+    def module_speak_sync(self, text, _bytes, message_type):
         if message_type == SPD_MSGTYPE_SOUND_ICON:
             module_speak_error()
             return
@@ -161,8 +163,20 @@ class PocketTTSModule:
             return
         module_report_event_end()
 
-    def list_voices(self):
-        return self.config["voices"]
+    def module_list_voices(self):
+        return [
+            SPDVoice(name=voice, language=language, variant=voice_type)
+            for language, voice_type, voice in self.config["voices"]
+        ]
+
+    def module_pause(self):
+        return 0
+
+    def module_stop(self):
+        return 0
+
+    def module_close(self):
+        return 0
 
 
 def volume_gain(volume):
@@ -192,7 +206,7 @@ def write_audio_chunk(chunk, sample_rate, volume):
 
 def main():
     return run_main(
-        parse_config,
+        module_config,
         PocketTTSModule,
         reexec=maybe_reexec,
         success_message="Pocket TTS initialized successfully.",
