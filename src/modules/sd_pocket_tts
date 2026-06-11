@@ -176,6 +176,9 @@ class PocketTTSModule:
     def module_stop(self):
         return 0
 
+    def module_debug(self, _enable, _filename):
+        return 0
+
     def module_close(self):
         return 0
 

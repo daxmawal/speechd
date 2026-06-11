@@ -317,7 +317,7 @@ def cmd_loglevel(module):
 
 
 def cmd_debug(module, line):
-    parts = line.split(maxsplit=2)
+    parts = line.split()
     if len(parts) < 2 or parts[0] != "DEBUG":
         _print(BAD_SYNTAX)
         return
@@ -326,7 +326,7 @@ def cmd_debug(module, line):
     filename = None
     if parts[1] == "ON":
         enable = True
-        if len(parts) != 3:
+        if len(parts) < 3:
             _print(BAD_SYNTAX)
             return
         filename = parts[2]
@@ -334,8 +334,7 @@ def cmd_debug(module, line):
         _print(BAD_SYNTAX)
         return
 
-    debug = getattr(module, "module_debug", None)
-    if debug is not None and not _setter_succeeded(debug(enable, filename)):
+    if module.module_debug(enable, filename) != 0:
         _print("303 CANT OPEN CUSTOM DEBUG FILE")
     else:
         _print("200 OK DEBUGGING %s" % parts[1])
