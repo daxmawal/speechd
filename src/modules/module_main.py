@@ -1,8 +1,7 @@
 #
-# module_main.py - Main startup structure for Python output modules.
+# module_main.c - Main file of output modules.
 #
 # Copyright (C) 2020-2021 Samuel Thibault <samuel.thibault@ens-lyon.org>
-# Copyright (C) 2026 Hypra
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -59,6 +58,7 @@ def run_main(
 ):
     argv = sys.argv if argv is None else argv
 
+    # Read configuration
     try:
         config = load_config(config_path(argv))
         if reexec is not None:
@@ -67,12 +67,14 @@ def run_main(
         module_close(None)
         return 1
 
+    # Wait for server init
     if sys.stdin.readline() != "INIT\n":
         sys.stderr.write("ERROR: Server did not start with INIT\n")
         sys.stderr.flush()
         module_close(None)
         return 3
 
+    # Initialize module */
     module = None
     try:
         module = module_factory(config)
@@ -86,6 +88,7 @@ def run_main(
     sys.stdout.write("299 OK LOADED SUCCESSFULLY\n")
     sys.stdout.flush()
 
+    # Run module
     result = module_process(module, hard_exit=hard_exit)
     if result:
         sys.stdout.write("399 ERR MODULE CLOSED\n")
