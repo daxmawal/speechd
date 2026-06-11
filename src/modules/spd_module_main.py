@@ -1,8 +1,7 @@
 #
-# spd_module_main.py - Interface for main loop of Python output modules.
+# spd_module_main.h - Interface for main loop of output modules.
 #
 # Copyright (C) 2020-2021, 2025 Samuel Thibault <samuel.thibault@ens-lyon.org>
-# Copyright (C) 2026 Hypra
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
