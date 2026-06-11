@@ -1,5 +1,5 @@
 #
-# module_process.c - Processing loop of output modules.
+# module_process.py - Processing loop of output modules.
 #
 # Copyright (C) 2020-2023, 2025 Samuel Thibault <samuel.thibault@ens-lyon.org>
 # All rights reserved.
