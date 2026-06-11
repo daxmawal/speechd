@@ -32,10 +32,6 @@ import threading
 
 import speechd_types
 
-BAD_SYNTAX = "302 ERROR BAD SYNTAX"
-BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
-BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
-
 _module_stdout_lock = threading.Lock()
 _current_module = None
 _module_should_stop = False
@@ -122,12 +118,36 @@ def module_tts_output_server(track, format):
         if _current_module is not None:
             module_process(_current_module, block=False)
 
+#
+# This only parses the SSIP protocol from the server, and calls the
+# corresponding functions provided by the module or by module_utils.c
+#
+
+BAD_SYNTAX = "302 ERROR BAD SYNTAX"
+BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
+BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 
 def cmd_speak(module, msgtype):
     global _module_should_stop
 
     _print("202 OK RECEIVING MESSAGE")
-    text, nlines = _read_message()
+
+    lines = []
+    nlines = 0
+    while True:
+        line = _readline(block=True)
+        if line is None:
+            return
+        if line == ".\n":
+            break
+        if line.startswith("."):
+            line = line[1:]
+        nlines += 1
+        lines.append(line)
+
+    text = "".join(lines)
+    if text.endswith("\n"):
+        text = text[:-1]
 
     if not text:
         module_speak_error()
@@ -146,13 +166,13 @@ def cmd_speak(module, msgtype):
         speak_sync(text, len(text), msgtype)
         return
 
-    result = module.module_speak(text, len(text), msgtype)
-    if result is None:
-        return
-    if result > 0:
-        module_speak_ok()
-    else:
-        module_speak_error()
+    with _module_stdout_lock:
+        result = module.module_speak(text, len(text), msgtype)
+        if result is not None and result > 0:
+            sys.stdout.write("200 OK SPEAKING\n")
+        else:
+            sys.stdout.write("301 ERROR CANT SPEAK\n")
+        sys.stdout.flush()
 
 
 def cmd_speak_text(module):
@@ -375,22 +395,6 @@ def _readline(block):
             return None
     line = sys.stdin.readline()
     return line if line else None
-
-
-def _read_message():
-    lines = []
-    while True:
-        line = _readline(block=True)
-        if line is None:
-            raise EOFError
-        if line == ".\n":
-            break
-        if line.startswith("."):
-            line = line[1:]
-        lines.append(line)
-
-    text = "".join(lines)
-    return (text[:-1] if text.endswith("\n") else text), len(lines)
 
 
 def _escape_audio(payload):
