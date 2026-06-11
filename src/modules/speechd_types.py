@@ -26,9 +26,21 @@ SPD_MSGTYPE_SOUND_ICON = 1
 SPD_MSGTYPE_CHAR = 2
 SPD_MSGTYPE_KEY = 3
 
+SPD_AUDIO_LE = 0
+SPD_AUDIO_BE = 1
+
 
 @dataclass
 class SPDVoice:
     name: str | None = None
     language: str | None = None
     variant: str | None = None
+
+
+@dataclass
+class AudioTrack:
+    bits: int
+    num_channels: int
+    sample_rate: int
+    num_samples: int
+    samples: bytes

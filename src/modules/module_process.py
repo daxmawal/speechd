@@ -63,55 +63,63 @@ def module_audio_set_through_server(cur_item, cur_value):
 
 
 def module_tts_output_send_server(
-    samples,
-    sample_rate,
-    num_channels=1,
-    bits=16,
-    big_endian=0,
+    track,
+    format,
 ):
-    sample_size = num_channels * bits // 8
+    sample_size = track.num_channels * track.bits // 8
+    size = track.num_samples * sample_size
+    header = (
+        "705-bits=%d\n"
+        "705-num_channels=%d\n"
+        "705-sample_rate=%d\n"
+        "705-num_samples=%d\n"
+        "705-big_endian=%d\n"
+        "705-AUDIO"
+    ) % (
+        track.bits,
+        track.num_channels,
+        track.sample_rate,
+        track.num_samples,
+        format,
+    )
 
-    module_send("705-bits=%d\n", bits)
-    module_send("705-num_channels=%d\n", num_channels)
-    module_send("705-sample_rate=%d\n", sample_rate)
-    module_send("705-num_samples=%d\n", len(samples) // sample_size)
-    module_send("705-big_endian=%d\n", big_endian)
-    module_send("705-AUDIO")
-    sys.stdout.buffer.write(b"\0")
-    sys.stdout.buffer.write(_escape_audio(samples))
-    sys.stdout.buffer.write(b"\n705 AUDIO\n")
-    sys.stdout.buffer.flush()
+    with _module_stdout_lock:
+        sys.stdout.buffer.write(header.encode())
+        sys.stdout.buffer.write(b"\0")
+        sys.stdout.buffer.write(_escape_audio(track.samples[:size]))
+        sys.stdout.buffer.write(b"\n705 AUDIO\n")
+        sys.stdout.buffer.flush()
 
 
 def module_tts_output_server(
-    samples,
-    sample_rate,
-    num_channels=1,
-    bits=16,
-    big_endian=0,
+    track,
+    format,
 ):
-    sample_size = num_channels * bits // 8
-    num_samples = len(samples) // sample_size
     samplepos = 0
+    sample_size = track.num_channels * track.bits // 8
 
-    while samplepos < num_samples:
+    while samplepos < track.num_samples:
         if _module_should_stop:
             break
 
         chunk_samples = MAX_CHUNK // sample_size
-        if chunk_samples > num_samples - samplepos:
-            chunk_samples = num_samples - samplepos
+        if chunk_samples > track.num_samples - samplepos:
+            chunk_samples = track.num_samples - samplepos
 
         start = samplepos * sample_size
         end = start + chunk_samples * sample_size
         samplepos += chunk_samples
 
+        mytrack = speechd_types.AudioTrack(
+            bits=track.bits,
+            num_channels=track.num_channels,
+            sample_rate=track.sample_rate,
+            num_samples=chunk_samples,
+            samples=track.samples[start:end],
+        )
         module_tts_output_send_server(
-            samples[start:end],
-            sample_rate,
-            num_channels,
-            bits,
-            big_endian,
+            mytrack,
+            format,
         )
 
         if _current_module is not None:

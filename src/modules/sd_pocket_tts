@@ -202,7 +202,14 @@ def write_audio_chunk(chunk, sample_rate, volume):
         .tobytes()
     )
 
-    module_tts_output_server(pcm, sample_rate)
+    track = speechd_types.AudioTrack(
+        bits=16,
+        num_channels=1,
+        sample_rate=sample_rate,
+        num_samples=len(pcm) // 2,
+        samples=pcm,
+    )
+    module_tts_output_server(track, speechd_types.SPD_AUDIO_LE)
 
 
 def main():
