@@ -36,8 +36,6 @@ BAD_SYNTAX = "302 ERROR BAD SYNTAX"
 BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
 BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 
-MAX_CHUNK = 10000
-
 _module_stdout_lock = threading.Lock()
 _current_module = None
 _module_should_stop = False
@@ -62,10 +60,7 @@ def module_audio_set_through_server(cur_item, cur_value):
     return 0
 
 
-def module_tts_output_send_server(
-    track,
-    format,
-):
+def module_tts_output_send_server(track, format):
     sample_size = track.num_channels * track.bits // 8
     size = track.num_samples * sample_size
     header = (
@@ -91,10 +86,12 @@ def module_tts_output_send_server(
         sys.stdout.buffer.flush()
 
 
-def module_tts_output_server(
-    track,
-    format,
-):
+# Arbitrary chunk size in bytes, large enough to get efficient transfer
+# but small enough to be reactive.
+MAX_CHUNK = 10000
+
+
+def module_tts_output_server(track, format):
     samplepos = 0
     sample_size = track.num_channels * track.bits // 8
 
