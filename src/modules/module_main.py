@@ -32,7 +32,6 @@ from collections.abc import Callable
 from typing import Any
 
 from module_utils import module_loop
-from spd_module_main import SPDModule
 
 
 def config_path(argv):
@@ -49,7 +48,7 @@ def print_init_error(message):
 
 def run_main(
     module_config: Callable[[str | None], Any],
-    module_factory: Callable[[Any], SPDModule],
+    module_factory: Callable[[Any], Any],
     *,
     argv=None,
     reexec=None,

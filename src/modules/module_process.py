@@ -29,7 +29,6 @@
 import select
 import sys
 
-from spd_module_main import SPDModule
 from speechd_types import (
     SPD_MSGTYPE_CHAR,
     SPD_MSGTYPE_KEY,
@@ -312,7 +311,7 @@ def cmd_quit(module):
     _print("210 OK QUIT")
 
 
-def module_process(module: SPDModule, fd=None, block=True):
+def module_process(module, fd=None, block=True):
     del fd
 
     global _current_module
