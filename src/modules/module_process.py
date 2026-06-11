@@ -84,7 +84,11 @@ def module_tts_output_send_server(track, format):
     with _module_stdout_lock:
         sys.stdout.buffer.write(header.encode())
         sys.stdout.buffer.write(b"\0")
-        sys.stdout.buffer.write(_escape_audio(track.samples[:size]))
+        for byte in track.samples[:size]:
+            if byte in (0x0A, 0x7D):
+                sys.stdout.buffer.write(bytes((0x7D, byte ^ 0x20)))
+            else:
+                sys.stdout.buffer.write(bytes((byte,)))
         sys.stdout.buffer.write(b"\n705 AUDIO\n")
         sys.stdout.buffer.flush()
 
@@ -305,7 +309,13 @@ def cmd_audio(module):
         if ret == 0:
             audio_init = getattr(module, "module_audio_init", None)
             if audio_init is not None:
-                ret = 0 if _setter_succeeded(audio_init()) else -1
+                result = audio_init()
+                if isinstance(result, bool):
+                    ret = 0 if result else -1
+                elif isinstance(result, int):
+                    ret = 0 if result == 0 else -1
+                else:
+                    ret = 0 if result else -1
 
     if ret == 0:
         module_send("203 OK AUDIO INITIALIZED\n")
@@ -409,25 +419,6 @@ def _readline(block):
             return None
     line = sys.stdin.readline()
     return line if line else None
-
-
-def _escape_audio(payload):
-    escaped = bytearray()
-    for byte in payload:
-        if byte in (0x0A, 0x7D):
-            escaped.append(0x7D)
-            escaped.append(byte ^ 0x20)
-        else:
-            escaped.append(byte)
-    return bytes(escaped)
-
-
-def _setter_succeeded(result):
-    if isinstance(result, bool):
-        return result
-    if isinstance(result, int):
-        return result == 0
-    return bool(result)
 
 
 def _call_module(module, name, *args):

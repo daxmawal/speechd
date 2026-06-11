@@ -67,10 +67,14 @@ def module_audio_set(cur_item, cur_value):
         "audio_alsa_device": 2,
         "audio_nas_server": 3,
         "audio_pulse_device": 4,
+        # TODO: restore AudioPulseServer option
+	    # SET_AUDIO_STR(audio_pulse_server, 4)
         "audio_pulse_min_length": 5,
+        # 6 reserved for speech-dispatcher module name
     }
     index = audio_parameters.get(cur_item)
     if index is None:
+        # Unknown parameter
         return -1
 
     module_audio_pars[index] = None if cur_value == "NULL" else cur_value
