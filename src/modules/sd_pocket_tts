@@ -25,14 +25,14 @@ import traceback
 
 from module_main import run_main
 from module_process import (
-    MESSAGE_TEXT,
-    event_begin,
-    event_end,
-    event_stop,
-    languages_match,
-    speak_error,
-    speak_ok,
-    write_audio_pcm,
+    SPD_MSGTYPE_SOUND_ICON,
+    SPD_MSGTYPE_TEXT,
+    module_report_event_begin,
+    module_report_event_end,
+    module_report_event_stop,
+    module_speak_error,
+    module_speak_ok,
+    module_tts_output_server,
 )
 from module_utils import module_strip_ssml
 
@@ -125,7 +125,7 @@ class PocketTTSModule:
 
     def select_configured_voice(self, language=None, voice_type=None):
         for candidate_language, candidate_type, candidate_voice in self.config["voices"]:
-            same_language = language is None or languages_match(language, candidate_language)
+            same_language = language is None or language_matches(language, candidate_language)
             same_type = voice_type is None or voice_type.upper() == candidate_type.upper()
             if same_language and same_type:
                 if self.voice != candidate_voice:
@@ -134,32 +134,33 @@ class PocketTTSModule:
                 return
 
     def speak(self, text, message_type):
-        if message_type == MESSAGE_TEXT:
+        if message_type == SPD_MSGTYPE_SOUND_ICON:
+            module_speak_error()
+            return
+        if message_type == SPD_MSGTYPE_TEXT:
             text = module_strip_ssml(text)
-        elif text == "space" or text.isspace():
-            text = "space"
 
         if not text.strip():
-            speak_error()
+            module_speak_error()
             return
 
         try:
             stream = self.model.generate_audio_stream(self.state_for_current_voice(), text)
         except Exception:
             traceback.print_exc(file=sys.stderr)
-            speak_error()
+            module_speak_error()
             return
 
-        speak_ok()
-        event_begin()
+        module_speak_ok()
+        module_report_event_begin()
         try:
             for chunk in stream:
                 write_audio_chunk(chunk, self.model.sample_rate, self.volume)
         except Exception:
             traceback.print_exc(file=sys.stderr)
-            event_stop()
+            module_report_event_stop()
             return
-        event_end()
+        module_report_event_end()
 
     def list_voices(self):
         return self.config["voices"]
@@ -167,6 +168,12 @@ class PocketTTSModule:
 
 def volume_gain(volume):
     return (volume + 100) / 100.0 if volume < 0 else 1.0 + volume / 100.0
+
+
+def language_matches(requested, candidate):
+    requested = requested.lower().replace("_", "-")
+    candidate = candidate.lower().replace("_", "-")
+    return requested == candidate or requested.split("-", 1)[0] == candidate.split("-", 1)[0]
 
 
 def write_audio_chunk(chunk, sample_rate, volume):
@@ -181,7 +188,7 @@ def write_audio_chunk(chunk, sample_rate, volume):
         .tobytes()
     )
 
-    write_audio_pcm(pcm, sample_rate)
+    module_tts_output_server(pcm, sample_rate)
 
 
 def main():

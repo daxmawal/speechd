@@ -30,7 +30,7 @@
 import sys
 import traceback
 
-from module_process import reply, run
+from module_process import module_process, module_send
 
 
 def config_path(argv):
@@ -42,8 +42,8 @@ def config_path(argv):
 
 def init_error(error):
     for line in str(error).splitlines():
-        print(f"399-{line}", flush=False)
-    reply("399 ERR CANT INIT MODULE")
+        module_send("399-%s\n", line)
+    module_send("399 ERR CANT INIT MODULE\n")
 
 
 def run_main(
@@ -81,19 +81,19 @@ def run_main(
         status = module.initialize()
     except Exception:
         init_error(traceback.format_exc())
-        close_module(module)
+        call_module_close(module)
         return 1
 
-    reply(f"299-{status or success_message}")
-    reply("299 OK LOADED SUCCESSFULLY")
-    result = run(module, hard_exit=hard_exit)
+    module_send("299-%s\n", status or success_message)
+    module_send("299 OK LOADED SUCCESSFULLY\n")
+    result = module_process(module, hard_exit=hard_exit)
     if result:
-        reply("399 ERR MODULE CLOSED")
-        close_module(module)
+        module_send("399 ERR MODULE CLOSED\n")
+        call_module_close(module)
     return result
 
 
-def close_module(module):
+def call_module_close(module):
     close = getattr(module, "close", None)
     if close is not None:
         close()
