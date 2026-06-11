@@ -1,5 +1,5 @@
 #
-# spd_module_main.h - Interface for main loop of output modules.
+# spd_module_main.py - Interface for main loop of output modules.
 #
 # Copyright (C) 2020-2021, 2025 Samuel Thibault <samuel.thibault@ens-lyon.org>
 # All rights reserved.
