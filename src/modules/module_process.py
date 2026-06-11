@@ -222,28 +222,37 @@ def cmd_list_voices(module, line):
     requested_variant = parts[3] if len(parts) >= 4 else None
     one = False
 
-    for voice in voices:
-        name = voice.name
-        language = voice.language
-        variant = voice.variant
-        if not name:
-            continue
-
-        language = language or "none"
-        variant = variant or "none"
-
-        if requested_language:
-            if requested_language.lower() != language.lower():
-                language_prefix = language.split("-", 1)[0]
-                if requested_language.lower() != language_prefix.lower():
-                    continue
-            if requested_variant and requested_variant.lower() != variant.lower():
+    with _module_stdout_lock:
+        for voice in voices:
+            name = voice.name
+            language = voice.language
+            variant = voice.variant
+            if not name:
+                # Ok, skip this
                 continue
 
-        one = True
-        module_send("200-%s\t%s\t%s\n", name, language, variant)
+            language = language or "none"
+            variant = variant or "none"
 
-    _print("200 OK VOICE LIST SENT" if one else "304 CANT LIST VOICES")
+            if requested_language:
+                if requested_language.lower() != language.lower():
+                    # Not exactly the requested locale, but maybe the language?
+                    language_prefix = language.split("-", 1)[0]
+                    if requested_language.lower() != language_prefix.lower():
+                        # Not the requested language
+                        continue
+                if requested_variant and requested_variant.lower() != variant.lower():
+                    # Not the requested variant, skip
+                    continue
+
+            one = True
+            sys.stdout.write("200-%s\t%s\t%s\n" % (name, language, variant))
+
+        if one:
+            sys.stdout.write("200 OK VOICE LIST SENT\n")
+        else:
+            sys.stdout.write("304 CANT LIST VOICES\n")
+        sys.stdout.flush()
 
 
 def cmd_params(module, ack, type_name, set_func):
@@ -271,7 +280,7 @@ def cmd_params(module, ack, type_name, set_func):
             err = BAD_SYNTAX
             continue
 
-        if not _setter_succeeded(set_func(module, var, val)):
+        if set_func(module, var, val) != 0:
             err = BAD_PARAM
 
 
