@@ -56,10 +56,11 @@ def run_main(
     hard_exit=False,
 ):
     argv = sys.argv if argv is None else argv
+    configfile = config_path(argv)
 
     # Read configuration
     try:
-        config = module_config(config_path(argv))
+        config = module_config(configfile)
         if reexec is not None:
             reexec(config, argv)
     except Exception:
@@ -67,35 +68,36 @@ def run_main(
         return 1
 
     # Wait for server init
-    if sys.stdin.readline() != "INIT\n":
+    line = sys.stdin.readline()
+    if line != "INIT\n":
         sys.stderr.write("ERROR: Server did not start with INIT\n")
         sys.stderr.flush()
         module_close(None)
         return 3
 
-    # Initialize module */
+    # Initialize module
     module = None
     try:
         module = module_factory(config)
-        status = module.module_init()
+        msg = module.module_init()
     except Exception:
         print_init_error(traceback.format_exc())
         module_close(module)
         return 1
 
-    if status is None:
-        status = "Unspecified initialization success\n"
-    sys.stdout.write("299-%s\n" % status)
+    if msg is None:
+        msg = "Unspecified initialization success\n"
+    sys.stdout.write("299-%s\n" % msg)
     sys.stdout.write("299 OK LOADED SUCCESSFULLY\n")
     sys.stdout.flush()
 
     # Run module
-    result = module_process(module, hard_exit=hard_exit)
-    if result:
+    ret = module_process(module, hard_exit=hard_exit)
+    if ret:
         sys.stdout.write("399 ERR MODULE CLOSED\n")
         sys.stdout.flush()
         module_close(module)
-    return result
+    return ret
 
 
 def module_close(module):
