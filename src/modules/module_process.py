@@ -38,6 +38,7 @@ MESSAGE_SOUND_ICON = "SOUND_ICON"
 BAD_SYNTAX = "302 ERROR BAD SYNTAX"
 BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
 BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
+CANT_SPEAK = "301 ERROR CANT SPEAK"
 
 MAX_AUDIO_CHUNK = 10000
 
@@ -50,6 +51,26 @@ def init_error(error):
     for line in str(error).splitlines():
         print(f"399-{line}", flush=False)
     reply("399 ERR CANT INIT MODULE")
+
+
+def speak_ok():
+    reply("200 OK SPEAKING")
+
+
+def speak_error():
+    reply(CANT_SPEAK)
+
+
+def event_begin():
+    reply("701 BEGIN")
+
+
+def event_end():
+    reply("702 END")
+
+
+def event_stop():
+    reply("703 STOP")
 
 
 def read_message():
@@ -188,7 +209,7 @@ def handle_speech_command(module, command):
     if command != "SPEAK" and lines > 1:
         reply(BAD_MULTILINE)
     elif command == MESSAGE_SOUND_ICON:
-        call_optional(module, "sound_icon", text, default=lambda: reply("301 ERROR CANT SPEAK"))
+        call_optional(module, "sound_icon", text, default=speak_error)
     else:
         module.speak(text, MESSAGE_TEXT if command == "SPEAK" else command)
 

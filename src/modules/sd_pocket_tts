@@ -25,10 +25,15 @@ import traceback
 
 from module_process import (
     MESSAGE_TEXT,
+    event_begin,
+    event_end,
+    event_stop,
     init_error,
     languages_match,
     reply,
     run,
+    speak_error,
+    speak_ok,
     write_audio_pcm,
 )
 from module_utils import module_strip_ssml
@@ -137,26 +142,26 @@ class PocketTTSModule:
             text = "space"
 
         if not text.strip():
-            reply("301 ERROR CANT SPEAK")
+            speak_error()
             return
 
         try:
             stream = self.model.generate_audio_stream(self.state_for_current_voice(), text)
         except Exception:
             traceback.print_exc(file=sys.stderr)
-            reply("301 ERROR CANT SPEAK")
+            speak_error()
             return
 
-        reply("200 OK SPEAKING")
-        reply("701 BEGIN")
+        speak_ok()
+        event_begin()
         try:
             for chunk in stream:
                 write_audio_chunk(chunk, self.model.sample_rate, self.volume)
         except Exception:
             traceback.print_exc(file=sys.stderr)
-            reply("703 STOP")
+            event_stop()
             return
-        reply("702 END")
+        event_end()
 
     def list_voices(self):
         return self.config["voices"]
