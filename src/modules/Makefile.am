@@ -306,7 +306,7 @@ endif
 # pocket-tts module
 #
 dist_modulebin_SCRIPTS = sd_pocket_tts
-dist_modulebin_DATA = module_main.py module_process.py module_utils.py
+dist_modulebin_DATA = module_main.py module_process.py module_utils.py speechd_types.py
 
 #
 # voxin module

@@ -25,8 +25,6 @@ import traceback
 
 from module_main import run_main
 from module_process import (
-    SPD_MSGTYPE_SOUND_ICON,
-    SPD_MSGTYPE_TEXT,
     module_report_event_begin,
     module_report_event_end,
     module_report_event_stop,
@@ -35,6 +33,7 @@ from module_process import (
     module_tts_output_server,
 )
 from module_utils import module_strip_ssml
+from speechd_types import SPD_MSGTYPE_SOUND_ICON, SPD_MSGTYPE_TEXT
 
 
 def parse_config(path):
