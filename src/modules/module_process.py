@@ -47,12 +47,6 @@ def reply(line):
     print(line, flush=True)
 
 
-def init_error(error):
-    for line in str(error).splitlines():
-        print(f"399-{line}", flush=False)
-    reply("399 ERR CANT INIT MODULE")
-
-
 def speak_ok():
     reply("200 OK SPEAKING")
 

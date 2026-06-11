@@ -23,15 +23,13 @@ import shutil
 import sys
 import traceback
 
+from module_main import run_main
 from module_process import (
     MESSAGE_TEXT,
     event_begin,
     event_end,
     event_stop,
-    init_error,
     languages_match,
-    reply,
-    run,
     speak_error,
     speak_ok,
     write_audio_pcm,
@@ -186,42 +184,14 @@ def write_audio_chunk(chunk, sample_rate, volume):
     write_audio_pcm(pcm, sample_rate)
 
 
-def config_path(argv):
-    for arg in argv[1:]:
-        if not arg.startswith("--"):
-            return arg
-    return None
-
-
 def main():
-    try:
-        config = parse_config(config_path(sys.argv))
-        maybe_reexec(config, sys.argv)
-    except Exception as error:
-        config = None
-        config_error = error
-    else:
-        config_error = None
-
-    if sys.stdin.readline() != "INIT\n":
-        init_error("Server did not start with INIT")
-        return 1
-
-    if config_error is not None:
-        init_error(config_error)
-        return 1
-
-    module = PocketTTSModule(config)
-    try:
-        module.initialize()
-    except Exception:
-        init_error(traceback.format_exc())
-        return 1
-
-    reply("299-Pocket TTS initialized successfully.")
-    reply("299 OK LOADED SUCCESSFULLY")
-
-    return run(module, hard_exit=True)
+    return run_main(
+        parse_config,
+        PocketTTSModule,
+        reexec=maybe_reexec,
+        success_message="Pocket TTS initialized successfully.",
+        hard_exit=True,
+    )
 
 
 if __name__ == "__main__":
