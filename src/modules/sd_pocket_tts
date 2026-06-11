@@ -1,450 +1,163 @@
 #!/usr/bin/env python3
 #
-# sd_pocket_tts - Speech Dispatcher output module for Kyutai Pocket TTS
+# Minimal Speech Dispatcher output module for Kyutai Pocket TTS.
 #
 # Copyright (C) 2026 Hypra
 #
-# This is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2, or (at your option)
-# any later version.
-#
-# This software is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2, or (at your option) any later version.
 
 import os
-import re
 import shlex
 import shutil
 import sys
 import traceback
-from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import List, Optional, Set, Tuple
 
-from module_utils import module_strip_ssml as strip_ssml
+from module_utils import module_strip_ssml
 
 
-MAX_VOICE_STATES = 4
-
-VOICE_TYPES = {
-    "MALE1",
-    "MALE2",
-    "MALE3",
-    "FEMALE1",
-    "FEMALE2",
-    "FEMALE3",
-    "CHILD_MALE",
-    "CHILD_FEMALE",
-}
-
-VOICE_FALLBACK_ORDER = (
-    "MALE1",
-    "FEMALE1",
-    "MALE2",
-    "FEMALE2",
-    "MALE3",
-    "FEMALE3",
-    "CHILD_MALE",
-    "CHILD_FEMALE",
-)
-
-UNSUPPORTED_NUMERIC_PARAMETERS = {"rate", "pitch", "pitch_range"}
-
-POCKET_TTS_CONFIG_KEYS = {
-    "PocketTTSPython",
-    "PocketTTSLanguage",
-    "PocketTTSDefaultVoice",
-}
-
-SUPPORTED_LANGUAGES = {
-    "english",
-    "english_2026-01",
-    "english_2026-04",
-    "french_24l",
-    "german_24l",
-    "portuguese",
-    "italian",
-    "spanish_24l",
-}
-
-
-@dataclass
-class Config:
-    python: str = "python3"
-    debug: bool = False
-    model_language: str = "english"
-    default_voice: str = ""
-    voices: List[Tuple[str, str, str]] = field(default_factory=list)
-
-
-@dataclass
-class Settings:
-    speechd_language: Optional[str] = None
-    voice_type: str = "MALE1"
-    synthesis_voice: Optional[str] = None
-    volume: int = 0
-
-
-class PocketTTSModule:
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.settings = Settings(
-            speechd_language=default_speechd_language(config.voices),
-            voice_type=default_voice_type(config.voices),
-        )
-        self.model = None
-        self.default_voice = config.default_voice
-        self.voice_states = OrderedDict()
-        self.debug_enabled = config.debug
-        self.debug_file = None
-        self.log_level = 0
-
-    def debug(self, message: str, level: int = 3) -> None:
-        if not self.debug_enabled and self.log_level < level:
-            return
-        if self.debug_file is not None:
-            handle = self.debug_file
-        else:
-            handle = sys.stderr
-        handle.write(message + "\n")
-        handle.flush()
-
-    def log_exception(self, message: str) -> None:
-        details = traceback.format_exc()
-        handle = self.debug_file if self.debug_file is not None else sys.stderr
-        handle.write(f"{message}\n{details}")
-        handle.flush()
-
-    def initialize(self) -> str:
-        import torch  # noqa: F401
-
-        from pocket_tts import TTSModel
-        from pocket_tts.default_parameters import get_default_voice_for_language
-
-        self.model = TTSModel.load_model(language=self.config.model_language)
-        if not self.default_voice:
-            self.default_voice = get_default_voice_for_language(self.config.model_language)
-        self.voice_state(self.default_voice)
-        return "Pocket TTS initialized successfully."
-
-    def selected_voice(self) -> str:
-        if self.settings.synthesis_voice:
-            return self.settings.synthesis_voice
-
-        language = self.settings.speechd_language
-        voice_type = self.settings.voice_type
-        voice = self.lookup_voice(language, voice_type) if language is not None else None
-        return voice or self.default_voice
-
-    def lookup_voice(self, language: str, voice_type: str) -> Optional[str]:
-        requested_type = voice_type.upper()
-        fallback_types = [requested_type]
-        fallback_types.extend(
-            candidate_type
-            for candidate_type in VOICE_FALLBACK_ORDER
-            if candidate_type != requested_type
-        )
-        normalized_language = language.lower().replace("_", "-")
-        language_prefix = normalized_language.split("-", 1)[0]
-
-        for requested_type in fallback_types:
-            for voice_language, candidate_type, voice_name in self.config.voices:
-                candidate_language = voice_language.lower().replace("_", "-")
-                if candidate_language == normalized_language and candidate_type == requested_type:
-                    return voice_name
-
-        for requested_type in fallback_types:
-            for voice_language, candidate_type, voice_name in self.config.voices:
-                candidate_prefix = voice_language.lower().replace("_", "-").split("-", 1)[0]
-                if candidate_prefix == language_prefix and candidate_type == requested_type:
-                    return voice_name
-
-        return None
-
-    def is_declared_voice(self, voice: str) -> bool:
-        return any(voice == voice_name for _language, _voice_type, voice_name in self.config.voices)
-
-    def voice_state(self, voice: str):
-        if voice in self.voice_states:
-            self.voice_states.move_to_end(voice)
-            return self.voice_states[voice]
-
-        state = self.model.get_state_for_audio_prompt(voice)
-        self.voice_states[voice] = state
-        if len(self.voice_states) > MAX_VOICE_STATES:
-            old_voice, _old_state = self.voice_states.popitem(last=False)
-            self.debug(f"Evicted cached Pocket TTS voice state for {old_voice!r}.")
-        return state
-
-    def discard_voice_state(self, voice: Optional[str]) -> None:
-        if voice is not None:
-            self.voice_states.pop(voice, None)
-
-    def list_voices(
-        self,
-        requested_language: Optional[str],
-        requested_variant: Optional[str],
-    ) -> None:
-        sent_any = False
-        for language, variant, name in self.config.voices:
-            if requested_language is not None and not language_matches(requested_language, language):
-                continue
-            if requested_variant is not None and requested_variant.lower() != variant.lower():
-                continue
-            print(f"200-{name}\t{language}\t{variant}", flush=False)
-            sent_any = True
-
-        if sent_any:
-            print("200 OK VOICE LIST SENT", flush=True)
-        else:
-            print("304 CANT LIST VOICES", flush=True)
-
-    def set_parameter(self, var: str, val: str) -> bool:
-        try:
-            if var == "volume":
-                number = int(val)
-                if number < -100 or number > 100:
-                    return False
-                self.settings.volume = number
-                return True
-
-            if var in UNSUPPORTED_NUMERIC_PARAMETERS:
-                # TODO: implement these Speech Dispatcher controls. Until then,
-                # only accept neutral values so clients do not get false success.
-                return int(val) == 0
-
-            if var == "language":
-                if val == "NULL":
-                    self.settings.speechd_language = default_speechd_language(self.config.voices)
-                    return True
-                if not is_valid_speechd_language(val):
-                    return False
-                self.settings.speechd_language = val
-                return True
-
-            if var == "voice":
-                normalized = val.upper()
-                if normalized not in VOICE_TYPES:
-                    return False
-                self.settings.voice_type = normalized
-                self.settings.synthesis_voice = None
-                return True
-
-            if var == "synthesis_voice":
-                if val == "NULL":
-                    self.settings.synthesis_voice = None
-                    return True
-                if not self.is_declared_voice(val):
-                    return False
-                self.settings.synthesis_voice = val
-                return True
-
-            if var == "punctuation_mode":
-                # TODO: implement punctuation preprocessing.
-                return val == "none"
-            if var == "spelling_mode":
-                # TODO: implement spelling mode.
-                return val == "off"
-            if var == "cap_let_recogn":
-                # TODO: implement capital-letter recognition.
-                return val == "none"
-        except ValueError:
-            return False
-
-        return False
-
-    def set_loglevel(self, var: str, val: str) -> bool:
-        if var != "log_level":
-            return False
-        try:
-            number = int(val)
-        except ValueError:
-            return False
-        if number < 0 or number > 5:
-            return False
-        self.log_level = number
-        return True
-
-    def speak(self, text: str, message_type: str) -> None:
-        if message_type in {"CHAR", "KEY"} and (text == "space" or text.isspace()):
-            text = "space"
-        if message_type == "TEXT":
-            text = strip_ssml(text)
-
-        if not text.strip():
-            print("301 ERROR CANT SPEAK", flush=True)
-            return
-
-        voice = None
-        try:
-            voice = self.selected_voice()
-            voice_state = self.voice_state(voice)
-            stream = self.audio_stream(voice_state, text)
-            try:
-                first_chunk = next(stream)
-            except StopIteration:
-                first_chunk = None
-        except Exception:
-            self.discard_voice_state(voice)
-            self.log_exception("Pocket TTS synthesis setup failed.")
-            print("301 ERROR CANT SPEAK", flush=True)
-            return
-
-        print("200 OK SPEAKING", flush=True)
-        print("701 BEGIN", flush=True)
-
-        try:
-            if first_chunk is not None:
-                write_audio_chunk(first_chunk, self.model.sample_rate, self.settings.volume)
-            for chunk in stream:
-                write_audio_chunk(chunk, self.model.sample_rate, self.settings.volume)
-        except Exception:
-            self.discard_voice_state(voice)
-            self.log_exception("Pocket TTS synthesis failed after BEGIN; reporting STOP.")
-            print("703 STOP", flush=True)
-            return
-
-        print("702 END", flush=True)
-
-    def audio_stream(self, voice_state, text: str):
-        return iter(self.model.generate_audio_stream(voice_state, text))
-
-    def close(self) -> None:
-        if self.debug_file is not None:
-            self.debug_file.close()
-            self.debug_file = None
-
-
-def parse_config(path: Optional[str]) -> Config:
-    config = Config()
+def parse_config(path):
+    config = {
+        "python": "python3",
+        "language": "english",
+        "voice": "",
+        "voices": [],
+    }
     if path is None:
         return config
 
     with open(path, encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, 1):
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            parts = shlex.split(line, comments=True)
+        for raw_line in handle:
+            parts = shlex.split(raw_line, comments=True)
             if not parts:
                 continue
 
-            key = parts[0]
-            values = parts[1:]
-            if key.startswith("PocketTTS"):
-                if key not in POCKET_TTS_CONFIG_KEYS:
-                    raise_config_error(path, line_number, f"invalid Pocket TTS directive {key!r}")
-                if len(values) != 1:
-                    raise_config_error(path, line_number, f"{key} expects exactly one argument")
-
-            if key == "Debug" and len(values) == 1:
-                config.debug = bool(
-                    parse_integer_option(path, line_number, key, values[0], choices={0, 1})
-                )
-            elif key == "Debug":
-                raise_config_error(path, line_number, "Debug expects exactly one argument")
-            elif key == "PocketTTSPython" and values:
-                config.python = values[0]
+            key, values = parts[0], parts[1:]
+            if key == "PocketTTSPython" and values:
+                config["python"] = values[0]
             elif key == "PocketTTSLanguage" and values:
-                if values[0] not in SUPPORTED_LANGUAGES:
-                    supported = ", ".join(sorted(SUPPORTED_LANGUAGES))
-                    raise_config_error(
-                        path,
-                        line_number,
-                        f"unsupported PocketTTSLanguage {values[0]!r}; supported values: {supported}",
-                    )
-                config.model_language = values[0]
+                config["language"] = values[0]
             elif key == "PocketTTSDefaultVoice" and values:
-                config.default_voice = values[0]
-            elif key == "AddVoice":
-                config.voices.append(parse_voice_option(path, line_number, values))
-            else:
-                raise_config_error(path, line_number, f"unknown directive {key!r}")
+                config["voice"] = values[0]
+            elif key == "AddVoice" and len(values) >= 3:
+                config["voices"].append(tuple(values[:3]))
+                if not config["voice"]:
+                    config["voice"] = values[2]
+            elif key != "Debug":
+                raise ValueError(f"unknown directive {key!r}")
 
     return config
 
 
-def parse_voice_option(path: str, line_number: int, values: List[str]) -> Tuple[str, str, str]:
-    if len(values) != 3:
-        raise_config_error(path, line_number, "AddVoice expects exactly three arguments")
-
-    language, voice_type, voice_name = values
-    if not language:
-        raise_config_error(path, line_number, "AddVoice language must not be empty")
-    normalized_type = voice_type.upper()
-    if normalized_type not in VOICE_TYPES:
-        supported = ", ".join(sorted(VOICE_TYPES))
-        raise_config_error(
-            path,
-            line_number,
-            f"unsupported AddVoice voice type {voice_type!r}; supported values: {supported}",
-        )
-    if not voice_name:
-        raise_config_error(path, line_number, "AddVoice voice name must not be empty")
-
-    return language, normalized_type, voice_name
-
-
-def parse_integer_option(
-    path: str,
-    line_number: int,
-    key: str,
-    value: str,
-    *,
-    choices: Optional[Set[int]] = None,
-) -> int:
-    try:
-        number = int(value)
-    except ValueError as error:
-        raise_config_error(path, line_number, f"{key} expects an integer, got {value!r}", error)
-
-    if choices is not None and number not in choices:
-        allowed = ", ".join(str(choice) for choice in sorted(choices))
-        raise_config_error(path, line_number, f"{key} must be one of {{{allowed}}}, got {number}")
-    return number
-
-
-def raise_config_error(
-    path: str,
-    line_number: int,
-    message: str,
-    cause: Optional[Exception] = None,
-) -> None:
-    error = ValueError(f"{path}:{line_number}: {message}")
-    if cause is not None:
-        raise error from cause
-    raise error
-
-
-def maybe_reexec(config: Config, argv: List[str]) -> None:
-    if "--no-reexec" in argv:
+def maybe_reexec(config, argv):
+    if "--no-reexec" in argv or not config["python"]:
         return
 
-    configured_python = config.python
-    if not configured_python:
+    target = config["python"]
+    resolved = shutil.which(target) if os.path.sep not in target else target
+    if resolved and os.path.abspath(resolved) == os.path.abspath(sys.executable):
         return
 
-    current = os.path.abspath(sys.executable)
-    if os.path.sep in configured_python:
-        target = os.path.abspath(configured_python)
-    else:
-        resolved = shutil.which(configured_python)
-        target = os.path.abspath(resolved) if resolved is not None else configured_python
-
-    if current == target:
-        return
-
-    os.execvp(configured_python, [configured_python, __file__, *argv[1:], "--no-reexec"])
+    os.execvp(target, [target, __file__, *argv[1:], "--no-reexec"])
 
 
-def read_message() -> Tuple[str, int]:
+class PocketTTSModule:
+    def __init__(self, config):
+        self.config = config
+        self.model = None
+        self.default_voice = config["voice"]
+        self.voice = config["voice"]
+        self.voice_state = None
+        self.voice_state_name = None
+        self.volume = 0
+
+    def initialize(self):
+        from pocket_tts import TTSModel
+        from pocket_tts.default_parameters import get_default_voice_for_language
+
+        self.model = TTSModel.load_model(language=self.config["language"])
+        if not self.default_voice:
+            self.default_voice = get_default_voice_for_language(self.config["language"])
+        self.voice = self.voice or self.default_voice
+        self.state_for_current_voice()
+
+    def state_for_current_voice(self):
+        if self.voice_state is None or self.voice_state_name != self.voice:
+            self.voice_state = self.model.get_state_for_audio_prompt(self.voice)
+            self.voice_state_name = self.voice
+        return self.voice_state
+
+    def set_parameter(self, var, val):
+        if var == "volume":
+            try:
+                self.volume = max(-100, min(100, int(val)))
+            except ValueError:
+                return False
+        elif var == "synthesis_voice":
+            self.voice = self.default_voice if val == "NULL" else val
+            self.voice_state = None
+        elif var == "language":
+            self.select_configured_voice(language=val)
+        elif var == "voice":
+            self.select_configured_voice(voice_type=val)
+        return True
+
+    def select_configured_voice(self, language=None, voice_type=None):
+        for candidate_language, candidate_type, candidate_voice in self.config["voices"]:
+            same_language = language is None or languages_match(language, candidate_language)
+            same_type = voice_type is None or voice_type.upper() == candidate_type.upper()
+            if same_language and same_type:
+                if self.voice != candidate_voice:
+                    self.voice = candidate_voice
+                    self.voice_state = None
+                return
+
+    def speak(self, text, message_type):
+        if message_type == "TEXT":
+            text = module_strip_ssml(text)
+        elif text == "space" or text.isspace():
+            text = "space"
+
+        if not text.strip():
+            reply("301 ERROR CANT SPEAK")
+            return
+
+        try:
+            stream = self.model.generate_audio_stream(self.state_for_current_voice(), text)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            reply("301 ERROR CANT SPEAK")
+            return
+
+        reply("200 OK SPEAKING")
+        reply("701 BEGIN")
+        try:
+            for chunk in stream:
+                write_audio_chunk(chunk, self.model.sample_rate, self.volume)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            reply("703 STOP")
+            return
+        reply("702 END")
+
+    def list_voices(self):
+        if not self.config["voices"]:
+            reply("304 CANT LIST VOICES")
+            return
+
+        for language, voice_type, voice in self.config["voices"]:
+            print(f"200-{voice}\t{language}\t{voice_type}", flush=False)
+        reply("200 OK VOICE LIST SENT")
+
+
+def languages_match(requested, candidate):
+    requested = requested.lower().replace("_", "-")
+    candidate = candidate.lower().replace("_", "-")
+    return requested == candidate or requested.split("-", 1)[0] == candidate.split("-", 1)[0]
+
+
+def read_message():
     lines = []
     while True:
         line = sys.stdin.readline()
@@ -457,14 +170,12 @@ def read_message() -> Tuple[str, int]:
         lines.append(line)
 
     text = "".join(lines)
-    if text.endswith("\n"):
-        text = text[:-1]
-    return text, len(lines)
+    return text[:-1] if text.endswith("\n") else text, len(lines)
 
 
-def receive_params(kind: str, ack: int, setter) -> bool:
-    print(f"{ack} OK RECEIVING {kind}SETTINGS", flush=True)
-    error = None
+def receive_settings(status, label, setter):
+    reply(f"{status} OK RECEIVING {label}SETTINGS")
+    ok = True
     while True:
         line = sys.stdin.readline()
         if line == "":
@@ -472,127 +183,97 @@ def receive_params(kind: str, ack: int, setter) -> bool:
         if line == ".\n":
             break
         if "=" not in line:
-            error = "302 ERROR BAD SYNTAX"
+            ok = False
             continue
         var, val = line.rstrip("\n").split("=", 1)
-        if not setter(var, val):
-            error = "303 ERROR INVALID PARAMETER OR VALUE"
-
-    if error is not None:
-        print(error, flush=True)
-        return False
-    return True
+        ok = setter(var, val) and ok
+    return ok
 
 
-def volume_gain(volume: int) -> float:
-    volume = max(-100, min(100, volume))
-    if volume < 0:
-        return (volume + 100) / 100.0
-    return 1.0 + volume / 100.0
+def volume_gain(volume):
+    return (volume + 100) / 100.0 if volume < 0 else 1.0 + volume / 100.0
 
 
-def write_audio_chunk(chunk, sample_rate: int, volume: int) -> None:
-    gain = volume_gain(volume)
-    audio = chunk.detach().cpu().reshape(-1) * gain
+def write_audio_chunk(chunk, sample_rate, volume):
+    torch = __import__("torch")
+    audio = chunk.detach().cpu().reshape(-1) * volume_gain(volume)
     pcm = (
         (audio.clamp(-1, 1) * 32767)
-        .to(__import__("torch").int16)
+        .to(torch.int16)
         .contiguous()
         .cpu()
         .numpy()
         .tobytes()
     )
-    max_bytes = 10000
-    for offset in range(0, len(pcm), max_bytes):
-        payload = pcm[offset : offset + max_bytes]
-        num_samples = len(payload) // 2
-        sys.stdout.write("705-bits=16\n")
-        sys.stdout.write("705-num_channels=1\n")
-        sys.stdout.write(f"705-sample_rate={sample_rate}\n")
-        sys.stdout.write(f"705-num_samples={num_samples}\n")
-        sys.stdout.write("705-big_endian=0\n")
-        sys.stdout.write("705-AUDIO")
-        sys.stdout.flush()
-        sys.stdout.buffer.write(b"\0")
-        sys.stdout.buffer.write(escape_audio(payload))
-        sys.stdout.buffer.write(b"\n705 AUDIO\n")
+
+    for offset in range(0, len(pcm), 10000):
+        chunk = pcm[offset : offset + 10000]
+        payload = escape_audio(chunk)
+        print("705-bits=16")
+        print("705-num_channels=1")
+        print(f"705-sample_rate={sample_rate}")
+        print(f"705-num_samples={len(chunk) // 2}")
+        print("705-big_endian=0")
+        print("705-AUDIO", end="", flush=True)
+        sys.stdout.buffer.write(b"\0" + payload + b"\n705 AUDIO\n")
         sys.stdout.buffer.flush()
 
 
-def escape_audio(payload: bytes) -> bytes:
-    output = bytearray()
+def escape_audio(payload):
+    escaped = bytearray()
     for byte in payload:
         if byte in (0x0A, 0x7D):
-            output.append(0x7D)
-            output.append(byte ^ 0x20)
+            escaped.append(0x7D)
+            escaped.append(byte ^ 0x20)
         else:
-            output.append(byte)
-    return bytes(output)
+            escaped.append(byte)
+    return bytes(escaped)
 
 
-def default_speechd_language(voices: List[Tuple[str, str, str]]) -> Optional[str]:
-    return voices[0][0] if voices else None
+def reply(line):
+    print(line, flush=True)
 
 
-def default_voice_type(voices: List[Tuple[str, str, str]]) -> str:
-    return voices[0][1] if voices else "MALE1"
-
-
-def language_matches(requested: str, candidate: str) -> bool:
-    requested_lower = requested.lower().replace("_", "-")
-    candidate_lower = candidate.lower().replace("_", "-")
-    if requested_lower == candidate_lower:
-        return True
-    return requested_lower.split("-", 1)[0] == candidate_lower.split("-", 1)[0]
-
-
-def is_valid_speechd_language(language: str) -> bool:
-    return re.fullmatch(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*", language) is not None
-
-
-def print_init_error(details: str) -> None:
-    for line in details.splitlines():
+def init_error(error):
+    for line in str(error).splitlines():
         print(f"399-{line}", flush=False)
-    print("399 ERR CANT INIT MODULE", flush=True)
+    reply("399 ERR CANT INIT MODULE")
 
 
-def main() -> int:
-    config_path = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else None
-    config_error = None
-    reexec_error = None
+def config_path(argv):
+    for arg in argv[1:]:
+        if not arg.startswith("--"):
+            return arg
+    return None
+
+
+def main():
     try:
-        config = parse_config(config_path)
+        config = parse_config(config_path(sys.argv))
+        maybe_reexec(config, sys.argv)
     except Exception as error:
-        config = Config()
+        config = None
         config_error = error
     else:
-        try:
-            maybe_reexec(config, sys.argv)
-        except OSError as error:
-            reexec_error = error
+        config_error = None
 
-    line = sys.stdin.readline()
-    if line != "INIT\n":
-        print_init_error("Server did not start with INIT")
+    if sys.stdin.readline() != "INIT\n":
+        init_error("Server did not start with INIT")
         return 1
 
     if config_error is not None:
-        print_init_error(str(config_error))
-        return 1
-
-    if reexec_error is not None:
-        print_init_error(str(reexec_error))
+        init_error(config_error)
         return 1
 
     module = PocketTTSModule(config)
     try:
-        status = module.initialize()
+        module.initialize()
     except Exception:
-        print_init_error(traceback.format_exc())
+        init_error(traceback.format_exc())
         return 1
 
-    print(f"299-{status}", flush=False)
-    print("299 OK LOADED SUCCESSFULLY", flush=True)
+    reply("299-Pocket TTS initialized successfully.")
+    reply("299 OK LOADED SUCCESSFULLY")
 
     try:
         while True:
@@ -601,65 +282,40 @@ def main() -> int:
                 return 1
             command = command.rstrip("\n")
 
-            if command == "SOUND_ICON":
-                print("202 OK RECEIVING MESSAGE", flush=True)
-                _text, lines = read_message()
-                if lines > 1:
-                    print("305 DATA MORE THAN ONE LINE", flush=True)
-                    continue
-                print("301 ERROR CANT SPEAK", flush=True)
-            elif command in {"SPEAK", "CHAR", "KEY"}:
-                print("202 OK RECEIVING MESSAGE", flush=True)
+            if command in {"SPEAK", "CHAR", "KEY", "SOUND_ICON"}:
+                reply("202 OK RECEIVING MESSAGE")
                 text, lines = read_message()
-                if command != "SPEAK" and lines > 1:
-                    print("305 DATA MORE THAN ONE LINE", flush=True)
-                    continue
-                module.speak(text, "TEXT" if command == "SPEAK" else command)
+                if command in {"CHAR", "KEY", "SOUND_ICON"} and lines > 1:
+                    reply("305 DATA MORE THAN ONE LINE")
+                elif command == "SOUND_ICON":
+                    reply("301 ERROR CANT SPEAK")
+                else:
+                    module.speak(text, "TEXT" if command == "SPEAK" else command)
             elif command in {"STOP", "PAUSE"}:
-                # TODO: handle these asynchronously while generate_audio_stream() is running.
                 continue
             elif command.startswith("LIST VOICES"):
-                parts = command.split()
-                requested_language = parts[2] if len(parts) >= 3 else None
-                requested_variant = parts[3] if len(parts) >= 4 else None
-                module.list_voices(requested_language, requested_variant)
+                module.list_voices()
             elif command == "SET":
-                if receive_params("", 203, module.set_parameter):
-                    print("203 OK SETTINGS RECEIVED", flush=True)
-            elif command == "AUDIO":
-                def set_audio(var: str, val: str) -> bool:
-                    return var == "audio_output_method" and val == "server"
-
-                if receive_params("AUDIO ", 207, set_audio):
-                    print("203 OK AUDIO INITIALIZED", flush=True)
-            elif command == "LOGLEVEL":
-                if receive_params("LOGLEVEL ", 207, module.set_loglevel):
-                    print("203 OK LOGLEVEL SET", flush=True)
-            elif command.startswith("DEBUG"):
-                parts = command.split(maxsplit=2)
-                if len(parts) >= 2 and parts[1] == "ON" and len(parts) == 3:
-                    try:
-                        debug_file = open(parts[2], "a", encoding="utf-8")
-                    except OSError:
-                        print("303 CANT OPEN CUSTOM DEBUG FILE", flush=True)
-                        continue
-                    module.close()
-                    module.debug_file = debug_file
-                    module.debug_enabled = True
-                    print("200 OK DEBUGGING ON", flush=True)
-                elif len(parts) >= 2 and parts[1] == "OFF":
-                    module.close()
-                    module.debug_enabled = False
-                    print("200 OK DEBUGGING OFF", flush=True)
+                if receive_settings(203, "", module.set_parameter):
+                    reply("203 OK SETTINGS RECEIVED")
                 else:
-                    print("302 ERROR BAD SYNTAX", flush=True)
+                    reply("303 ERROR INVALID PARAMETER OR VALUE")
+            elif command == "AUDIO":
+                receive_settings(207, "AUDIO ", lambda _var, _val: True)
+                reply("203 OK AUDIO INITIALIZED")
+            elif command == "LOGLEVEL":
+                receive_settings(207, "LOGLEVEL ", lambda _var, _val: True)
+                reply("203 OK LOGLEVEL SET")
+            elif command.startswith("DEBUG"):
+                reply("200 OK DEBUGGING ON" if " ON" in command else "200 OK DEBUGGING OFF")
             elif command == "QUIT":
-                print("210 OK QUIT", flush=True)
+                reply("210 OK QUIT")
                 return 0
             else:
-                print("300 ERR UNKNOWN COMMAND", flush=True)
+                reply("300 ERR UNKNOWN COMMAND")
     except EOFError:
         return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
