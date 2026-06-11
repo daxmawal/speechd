@@ -42,7 +42,6 @@ BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 
 MAX_CHUNK = 10000
 
-_audio_server = False
 _current_module = None
 _module_should_stop = False
 
@@ -52,11 +51,6 @@ def module_send(fmt, *args):
         fmt = fmt % args
     sys.stdout.write(fmt)
     sys.stdout.flush()
-
-
-def module_audio_set_server():
-    global _audio_server
-    _audio_server = True
 
 
 def module_audio_set_through_server(cur_item, cur_value):
@@ -262,14 +256,11 @@ def cmd_set(module):
 
 
 def cmd_audio(module):
-    if _audio_server:
-        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set_through_server)
-    else:
-        ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
-        if ret == 0:
-            audio_init = getattr(module, "module_audio_init", None)
-            if audio_init is not None:
-                ret = 0 if _setter_succeeded(audio_init()) else -1
+    ret = cmd_params(module, 207, "AUDIO ", _module_audio_set)
+    if ret == 0:
+        audio_init = getattr(module, "module_audio_init", None)
+        if audio_init is not None:
+            ret = 0 if _setter_succeeded(audio_init()) else -1
 
     if ret == 0:
         _print("203 OK AUDIO INITIALIZED")
@@ -355,12 +346,6 @@ def module_process(module, fd=None, block=True):
         _current_module = previous_module
 
 
-def module_report_index_mark(mark):
-    if mark is None:
-        return
-    _print("700-%s\n700 INDEX MARK" % mark)
-
-
 def module_report_event_begin():
     _print("701 BEGIN")
 
@@ -371,16 +356,6 @@ def module_report_event_end():
 
 def module_report_event_stop():
     _print("703 STOP")
-
-
-def module_report_event_pause():
-    _print("704 PAUSE")
-
-
-def module_report_icon(icon):
-    if icon is None:
-        return
-    _print("706-%s\n706 ICON" % icon)
 
 
 def _print(line):
