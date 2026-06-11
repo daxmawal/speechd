@@ -33,7 +33,7 @@ from module_process import (
     module_tts_output_server,
 )
 from module_utils import module_strip_ssml
-from speechd_types import SPD_MSGTYPE_SOUND_ICON, SPD_MSGTYPE_TEXT, SPDVoice
+import speechd_types
 
 
 def module_config(path):
@@ -136,10 +136,10 @@ class PocketTTSModule:
                 return
 
     def module_speak_sync(self, text, _bytes, message_type):
-        if message_type == SPD_MSGTYPE_SOUND_ICON:
+        if message_type == speechd_types.SPD_MSGTYPE_SOUND_ICON:
             module_speak_error()
             return
-        if message_type == SPD_MSGTYPE_TEXT:
+        if message_type == speechd_types.SPD_MSGTYPE_TEXT:
             text = module_strip_ssml(text)
 
         if not text.strip():
@@ -166,7 +166,7 @@ class PocketTTSModule:
 
     def module_list_voices(self):
         return [
-            SPDVoice(name=voice, language=language, variant=voice_type)
+            speechd_types.SPDVoice(name=voice, language=language, variant=voice_type)
             for language, voice_type, voice in self.config["voices"]
         ]
 

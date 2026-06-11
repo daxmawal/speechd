@@ -29,12 +29,7 @@
 import select
 import sys
 
-from speechd_types import (
-    SPD_MSGTYPE_CHAR,
-    SPD_MSGTYPE_KEY,
-    SPD_MSGTYPE_SOUND_ICON,
-    SPD_MSGTYPE_TEXT,
-)
+import speechd_types
 
 BAD_SYNTAX = "302 ERROR BAD SYNTAX"
 BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
@@ -127,11 +122,11 @@ def cmd_speak(module, msgtype):
         module_speak_error()
         return
 
-    if msgtype != SPD_MSGTYPE_TEXT and nlines > 1:
+    if msgtype != speechd_types.SPD_MSGTYPE_TEXT and nlines > 1:
         _print(BAD_MULTILINE)
         return
 
-    if msgtype in {SPD_MSGTYPE_KEY, SPD_MSGTYPE_CHAR} and text == "space":
+    if msgtype in {speechd_types.SPD_MSGTYPE_KEY, speechd_types.SPD_MSGTYPE_CHAR} and text == "space":
         text = " "
 
     _module_should_stop = False
@@ -150,19 +145,19 @@ def cmd_speak(module, msgtype):
 
 
 def cmd_speak_text(module):
-    return cmd_speak(module, SPD_MSGTYPE_TEXT)
+    return cmd_speak(module, speechd_types.SPD_MSGTYPE_TEXT)
 
 
 def cmd_speak_sound_icon(module):
-    return cmd_speak(module, SPD_MSGTYPE_SOUND_ICON)
+    return cmd_speak(module, speechd_types.SPD_MSGTYPE_SOUND_ICON)
 
 
 def cmd_speak_char(module):
-    return cmd_speak(module, SPD_MSGTYPE_CHAR)
+    return cmd_speak(module, speechd_types.SPD_MSGTYPE_CHAR)
 
 
 def cmd_speak_key(module):
-    return cmd_speak(module, SPD_MSGTYPE_KEY)
+    return cmd_speak(module, speechd_types.SPD_MSGTYPE_KEY)
 
 
 def module_speak_ok():
