@@ -100,6 +100,7 @@ class PocketTTSModule:
             self.default_voice = get_default_voice_for_language(self.config["language"])
         self.voice = self.voice or self.default_voice
         self.state_for_current_voice()
+        return "Pocket TTS initialized successfully."
 
     def state_for_current_voice(self):
         if self.voice_state is None or self.voice_state_name != self.voice:
@@ -209,7 +210,6 @@ def main():
         module_config,
         PocketTTSModule,
         reexec=maybe_reexec,
-        success_message="Pocket TTS initialized successfully.",
         hard_exit=True,
     )
 

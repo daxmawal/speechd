@@ -53,7 +53,6 @@ def run_main(
     *,
     argv=None,
     reexec=None,
-    success_message="Unspecified initialization success",
     hard_exit=False,
 ):
     argv = sys.argv if argv is None else argv
@@ -84,7 +83,9 @@ def run_main(
         module_close(module)
         return 1
 
-    sys.stdout.write("299-%s\n" % (status or success_message))
+    if status is None:
+        status = "Unspecified initialization success\n"
+    sys.stdout.write("299-%s\n" % status)
     sys.stdout.write("299 OK LOADED SUCCESSFULLY\n")
     sys.stdout.flush()
 
