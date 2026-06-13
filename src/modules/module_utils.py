@@ -135,8 +135,10 @@ def module_strip_ssml(message: str) -> str:
             i += 1
             continue
 
-        # Replaces entities even when it is inside a tag.
-        # <tag attr="Tom &amp; Jerry">Hello</tag> become &Hello.
+        if omit:
+            i += 1
+            continue
+
         entity = next(
             (
                 (entity_text, replacement)
