@@ -25,6 +25,7 @@ import traceback
 
 from module_main import run_main
 from module_process import (
+    module_audio_set_server,
     module_report_event_begin,
     module_report_event_end,
     module_report_event_stop,
@@ -34,6 +35,16 @@ from module_process import (
 )
 from module_utils import module_strip_ssml
 import speechd_types
+
+
+UNSUPPORTED_SETTINGS = {
+    "pitch",
+    "pitch_range",
+    "rate",
+    "punctuation_mode",
+    "spelling_mode",
+    "cap_let_recogn",
+}
 
 
 def module_config(path):
@@ -95,6 +106,7 @@ class PocketTTSModule:
         from pocket_tts import TTSModel
         from pocket_tts.default_parameters import get_default_voice_for_language
 
+        module_audio_set_server()
         self.model = TTSModel.load_model(language=self.config["language"])
         if not self.default_voice:
             self.default_voice = get_default_voice_for_language(self.config["language"])
@@ -121,6 +133,8 @@ class PocketTTSModule:
             self.select_configured_voice(language=val)
         elif var == "voice":
             self.select_configured_voice(voice_type=val)
+        elif var in UNSUPPORTED_SETTINGS:
+            pass
         else:
             return -1
         return 0
