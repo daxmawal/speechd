@@ -23,6 +23,7 @@ dist_moduleconf_DATA = cicero.conf espeak.conf espeak-ng.conf espeak-ng-mbrola.c
                        espeak-ng-mbrola-generic.conf espeak-mbrola-generic.conf \
                        llia_phon-generic.conf \
                        swift-generic.conf mary-generic.conf mimic3-generic.conf \
+                       pocket-tts.conf \
                        openjtalk.conf
 
 dist_moduleconforig_DATA = cicero.conf espeak.conf festival.conf espeak-ng.conf espeak-ng-mbrola.conf
@@ -31,6 +32,7 @@ dist_moduleconforig_DATA = cicero.conf espeak.conf festival.conf espeak-ng.conf 
                            espeak-ng-mbrola-generic.conf espeak-mbrola-generic.conf \
                            llia_phon-generic.conf \
                            swift-generic.conf mary-generic.conf mimic3-generic.conf \
+                           pocket-tts.conf \
                            openjtalk.conf
 
 if ivona_support

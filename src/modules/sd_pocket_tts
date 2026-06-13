@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+#
+# sd_pocket_tts - Speech Dispatcher output module for Kyutai Pocket TTS
+#
+# Copyright (C) 2026 Hypra
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2, or (at your option)
+# any later version.
+#
+# This software is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import os
+import shlex
+import shutil
+import sys
+import traceback
+
+from module_main import run_main
+from module_process import (
+    module_audio_set_server,
+    module_report_event_begin,
+    module_report_event_end,
+    module_report_event_stop,
+    module_speak_error,
+    module_speak_ok,
+    module_tts_output_server,
+)
+from module_utils import module_strip_ssml
+import speechd_types
+
+
+UNSUPPORTED_SETTINGS = {
+    "pitch",
+    "pitch_range",
+    "rate",
+    "punctuation_mode",
+    "spelling_mode",
+    "cap_let_recogn",
+}
+
+
+def module_config(path):
+    config = {
+        "python": "python3",
+        "language": "english",
+        "voice": "",
+        "voices": [],
+    }
+    if path is None:
+        return config
+
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            parts = shlex.split(raw_line, comments=True)
+            if not parts:
+                continue
+
+            key, values = parts[0], parts[1:]
+            if key == "PocketTTSPython" and values:
+                config["python"] = values[0]
+            elif key == "PocketTTSLanguage" and values:
+                config["language"] = values[0]
+            elif key == "PocketTTSDefaultVoice" and values:
+                config["voice"] = values[0]
+            elif key == "AddVoice" and len(values) >= 3:
+                config["voices"].append(tuple(values[:3]))
+                if not config["voice"]:
+                    config["voice"] = values[2]
+            elif key != "Debug":
+                raise ValueError(f"unknown directive {key!r}")
+
+    return config
+
+
+def maybe_reexec(config, argv):
+    if "--no-reexec" in argv or not config["python"]:
+        return
+
+    target = config["python"]
+    resolved = shutil.which(target) if os.path.sep not in target else target
+    if resolved and os.path.abspath(resolved) == os.path.abspath(sys.executable):
+        return
+
+    os.execvp(target, [target, __file__, *argv[1:], "--no-reexec"])
+
+
+class PocketTTSModule:
+    def __init__(self, config):
+        self.config = config
+        self.model = None
+        self.default_voice = config["voice"]
+        self.voice = config["voice"]
+        self.voice_state = None
+        self.voice_state_name = None
+        self.volume = 0
+
+    def module_init(self):
+        from pocket_tts import TTSModel
+        from pocket_tts.default_parameters import get_default_voice_for_language
+
+        module_audio_set_server()
+        self.model = TTSModel.load_model(language=self.config["language"])
+        if not self.default_voice:
+            self.default_voice = get_default_voice_for_language(self.config["language"])
+        self.voice = self.voice or self.default_voice
+        self.state_for_current_voice()
+        return "Pocket TTS initialized successfully."
+
+    def state_for_current_voice(self):
+        if self.voice_state is None or self.voice_state_name != self.voice:
+            self.voice_state = self.model.get_state_for_audio_prompt(self.voice)
+            self.voice_state_name = self.voice
+        return self.voice_state
+
+    def module_set(self, var, val):
+        if var == "volume":
+            try:
+                self.volume = max(-100, min(100, int(val)))
+            except ValueError:
+                return -1
+        elif var == "synthesis_voice":
+            self.voice = self.default_voice if val == "NULL" else val
+            self.voice_state = None
+        elif var == "language":
+            self.select_configured_voice(language=val)
+        elif var == "voice":
+            self.select_configured_voice(voice_type=val)
+        elif var in UNSUPPORTED_SETTINGS:
+            pass
+        else:
+            return -1
+        return 0
+
+    def select_configured_voice(self, language=None, voice_type=None):
+        for candidate_language, candidate_type, candidate_voice in self.config["voices"]:
+            same_language = language is None or language_matches(language, candidate_language)
+            same_type = voice_type is None or voice_type.upper() == candidate_type.upper()
+            if same_language and same_type:
+                if self.voice != candidate_voice:
+                    self.voice = candidate_voice
+                    self.voice_state = None
+                return
+
+    def module_speak_sync(self, text, _bytes, message_type):
+        if message_type == speechd_types.SPD_MSGTYPE_SOUND_ICON:
+            module_speak_error()
+            return
+        if message_type == speechd_types.SPD_MSGTYPE_TEXT:
+            text = module_strip_ssml(text)
+
+        if not text.strip():
+            module_speak_error()
+            return
+
+        try:
+            stream = self.model.generate_audio_stream(self.state_for_current_voice(), text)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            module_speak_error()
+            return
+
+        module_speak_ok()
+        module_report_event_begin()
+        try:
+            for chunk in stream:
+                write_audio_chunk(chunk, self.model.sample_rate, self.volume)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            module_report_event_stop()
+            return
+        module_report_event_end()
+
+    def module_list_voices(self):
+        return [
+            speechd_types.SPDVoice(name=voice, language=language, variant=voice_type)
+            for language, voice_type, voice in self.config["voices"]
+        ]
+
+    def module_pause(self):
+        return 0
+
+    def module_stop(self):
+        return 0
+
+    def module_close(self):
+        return 0
+
+
+def volume_gain(volume):
+    return (volume + 100) / 100.0 if volume < 0 else 1.0 + volume / 100.0
+
+
+def language_matches(requested, candidate):
+    requested = requested.lower().replace("_", "-")
+    candidate = candidate.lower().replace("_", "-")
+    return requested == candidate or requested.split("-", 1)[0] == candidate.split("-", 1)[0]
+
+
+def write_audio_chunk(chunk, sample_rate, volume):
+    torch = __import__("torch")
+    audio = chunk.detach().cpu().reshape(-1) * volume_gain(volume)
+    pcm = (
+        (audio.clamp(-1, 1) * 32767)
+        .to(torch.int16)
+        .contiguous()
+        .cpu()
+        .numpy()
+        .tobytes()
+    )
+
+    track = speechd_types.AudioTrack(
+        bits=16,
+        num_channels=1,
+        sample_rate=sample_rate,
+        num_samples=len(pcm) // 2,
+        samples=pcm,
+    )
+    module_tts_output_server(track, speechd_types.SPD_AUDIO_LE)
+
+
+def main():
+    return run_main(
+        module_config,
+        PocketTTSModule,
+        reexec=maybe_reexec,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -303,6 +303,12 @@ sd_cxxpiper_LDADD = $(top_builddir)/src/common/libcommon.la \
 endif
 
 #
+# pocket-tts module
+#
+dist_modulebin_SCRIPTS = sd_pocket_tts
+dist_modulebin_DATA = module_main.py module_process.py module_utils.py speechd_types.py
+
+#
 # voxin module
 #
 if voxin_support
