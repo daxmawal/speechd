@@ -385,6 +385,75 @@ PY
 
 AT_CLEANUP
 
+AT_SETUP([Python missing set callback protocol])
+AT_KEYWORDS([python module_process set-error])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main
+
+
+class MinimalModule:
+    def __init__(self):
+        self.closed = False
+
+    def module_init(self):
+        return "fake initialized"
+
+    def module_close(self):
+        self.closed = True
+
+
+module = MinimalModule()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+old_stderr = sys.stderr
+stdout = io.StringIO()
+stderr = io.StringIO()
+try:
+    sys.stdin = io.StringIO(
+        "INIT\n"
+        "SET\n"
+        "voice=fake\n"
+        ".\n"
+        "QUIT\n"
+    )
+    sys.stdout = stdout
+    sys.stderr = stderr
+    ret = module_main.run_main(lambda _path: {}, lambda _config: module, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+expected = (
+    "299-fake initialized\n"
+    "299 OK LOADED SUCCESSFULLY\n"
+    "203 OK RECEIVING SETTINGS\n"
+    "303 ERROR INVALID PARAMETER OR VALUE\n"
+    "210 OK QUIT\n"
+)
+if stdout.getvalue() != expected:
+    raise SystemExit("unexpected protocol output: %r" % stdout.getvalue())
+if stderr.getvalue():
+    raise SystemExit("unexpected stderr: %r" % stderr.getvalue())
+if ret != 0:
+    raise SystemExit("unexpected return value: %r" % ret)
+if not module.closed:
+    raise SystemExit("module_close was not called")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
 AT_SETUP([Python backend callback error protocol])
 AT_KEYWORDS([python module_process backend-error])
 

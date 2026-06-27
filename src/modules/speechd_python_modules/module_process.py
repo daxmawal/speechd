@@ -320,8 +320,13 @@ def cmd_params(ack, param_type, set_param, source=None):
             err = BAD_PARAM
 
 
+def _module_set_missing(_var, _val):
+    return -1
+
+
 def cmd_set(module, source=None):
-    if cmd_params(203, "", module.module_set, source) != 0:
+    module_set = getattr(module, "module_set", _module_set_missing)
+    if cmd_params(203, "", module_set, source) != 0:
         return
     module_send("203 OK SETTINGS RECEIVED\n")
 
