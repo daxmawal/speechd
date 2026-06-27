@@ -36,13 +36,17 @@ def config_path(argv):
     return argv[1] if len(argv) >= 2 else None
 
 
-def print_init_error(message):
+def _init_message(message, default):
     if message is None:
-        message = "Unspecified initialization error"
+        message = default
     message = " ".join(str(message).splitlines())
     if not message:
-        message = "Unspecified initialization error"
+        message = default
+    return message
 
+
+def print_init_error(message):
+    message = _init_message(message, "Unspecified initialization error")
     sys.stdout.write("399-%s\n" % message)
     sys.stdout.write("399 ERR CANT INIT MODULE\n")
     sys.stdout.flush()
@@ -78,8 +82,7 @@ def run_main(module_config, module_factory, argv=None, reexec=None):
         module_close(module)
         return 1
 
-    if msg is None:
-        msg = "Unspecified initialization success\n"
+    msg = _init_message(msg, "Unspecified initialization success")
     sys.stdout.write("299-%s\n" % msg)
     sys.stdout.write("299 OK LOADED SUCCESSFULLY\n")
     sys.stdout.flush()
@@ -94,4 +97,7 @@ def run_main(module_config, module_factory, argv=None, reexec=None):
 
 def module_close(module):
     if module is not None:
-        module.module_close()
+        try:
+            module.module_close()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
