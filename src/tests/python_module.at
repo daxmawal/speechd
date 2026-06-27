@@ -30,11 +30,11 @@ PYTHONPATH="$test_pythonpath" \
 import os
 import sys
 
-from speechd_python_modules import module_utils, speechd_types
+from speechd_python_modules import module_main, module_process, module_utils, speechd_types
 
 pythonpath_dir = os.path.realpath(sys.argv[1])
 module_dir = os.path.join(pythonpath_dir, "speechd_python_modules")
-modules = [module_utils, speechd_types]
+modules = [module_main, module_process, module_utils, speechd_types]
 
 
 def check_module_path(module):
@@ -48,6 +48,738 @@ def check_module_path(module):
 
 for module in modules:
     check_module_path(module)
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python module config error protocol])
+AT_KEYWORDS([python module_main config-error])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main
+
+
+def fail_config(_path):
+    raise RuntimeError("bad config")
+
+
+old_stdout = sys.stdout
+old_stderr = sys.stderr
+stdout = io.StringIO()
+stderr = io.StringIO()
+try:
+    sys.stdout = stdout
+    sys.stderr = stderr
+    ret = module_main.run_main(fail_config, lambda _config: object(), ["fake-module"])
+finally:
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+if ret != 1:
+    raise SystemExit("unexpected return value: %r" % ret)
+if stdout.getvalue() != "":
+    raise SystemExit("stdout should stay empty before INIT: %r" % stdout.getvalue())
+if "Traceback" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain a traceback")
+if "RuntimeError: bad config" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain the exception")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python module init error protocol])
+AT_KEYWORDS([python module_main init-error])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main
+
+
+class FailingModule:
+    def __init__(self):
+        self.closed = False
+
+    def module_init(self):
+        raise RuntimeError("first line\nsecond line")
+
+    def module_close(self):
+        self.closed = True
+
+
+module = FailingModule()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+old_stderr = sys.stderr
+stdout = io.StringIO()
+stderr = io.StringIO()
+try:
+    sys.stdin = io.StringIO("INIT\n")
+    sys.stdout = stdout
+    sys.stderr = stderr
+    ret = module_main.run_main(lambda _path: {}, lambda _config: module, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+expected_stdout = "399-first line second line\n399 ERR CANT INIT MODULE\n"
+if ret != 1:
+    raise SystemExit("unexpected return value: %r" % ret)
+if not module.closed:
+    raise SystemExit("module_close was not called")
+if stdout.getvalue() != expected_stdout:
+    raise SystemExit("unexpected stdout: %r" % stdout.getvalue())
+if "Traceback" in stdout.getvalue():
+    raise SystemExit("stdout contains a traceback")
+if "Traceback" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain a traceback")
+if "RuntimeError: first line" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain the exception")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python speak sync error protocol])
+AT_KEYWORDS([python module_process speak-error])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main, speechd_types
+
+
+class FailingSpeakModule:
+    def __init__(self):
+        self.closed = False
+        self.spoken = []
+
+    def module_init(self):
+        return "fake initialized"
+
+    def module_speak_sync(self, text, text_len, msgtype):
+        self.spoken.append((text, text_len, msgtype))
+        raise RuntimeError("speak failed")
+
+    def module_close(self):
+        self.closed = True
+
+
+module = FailingSpeakModule()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+old_stderr = sys.stderr
+stdout = io.StringIO()
+stderr = io.StringIO()
+try:
+    sys.stdin = io.StringIO("INIT\nSPEAK\nHello\n.\nQUIT\n")
+    sys.stdout = stdout
+    sys.stderr = stderr
+    ret = module_main.run_main(lambda _path: {}, lambda _config: module, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+output = stdout.getvalue()
+required = [
+    "299-fake initialized\n",
+    "299 OK LOADED SUCCESSFULLY\n",
+    "202 OK RECEIVING MESSAGE\n",
+    "301 ERROR CANT SPEAK\n",
+    "210 OK QUIT\n",
+]
+for needle in required:
+    if needle not in output:
+        raise SystemExit("missing stdout %r in %r" % (needle, output))
+if "Traceback" in output:
+    raise SystemExit("stdout contains a traceback")
+if "399 ERR MODULE CLOSED" in output:
+    raise SystemExit("module loop did not recover after speak error")
+if ret != 0:
+    raise SystemExit("unexpected return value: %r" % ret)
+if not module.closed:
+    raise SystemExit("module_close was not called")
+if module.spoken != [("Hello", 5, speechd_types.SPD_MSGTYPE_TEXT)]:
+    raise SystemExit("unexpected spoken messages: %r" % (module.spoken,))
+if "Traceback" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain a traceback")
+if "RuntimeError: speak failed" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain the exception")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python speak async error protocol])
+AT_KEYWORDS([python module_process speak-error])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main, speechd_types
+
+
+class FailingAsyncSpeakModule:
+    def __init__(self):
+        self.closed = False
+        self.spoken = []
+
+    def module_init(self):
+        return "fake initialized"
+
+    def module_speak(self, text, text_len, msgtype):
+        self.spoken.append((text, text_len, msgtype))
+        raise RuntimeError("async speak failed")
+
+    def module_close(self):
+        self.closed = True
+
+
+module = FailingAsyncSpeakModule()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+old_stderr = sys.stderr
+stdout = io.StringIO()
+stderr = io.StringIO()
+try:
+    sys.stdin = io.StringIO("INIT\nSPEAK\nHello\n.\nQUIT\n")
+    sys.stdout = stdout
+    sys.stderr = stderr
+    ret = module_main.run_main(lambda _path: {}, lambda _config: module, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+output = stdout.getvalue()
+required = [
+    "299-fake initialized\n",
+    "299 OK LOADED SUCCESSFULLY\n",
+    "202 OK RECEIVING MESSAGE\n",
+    "301 ERROR CANT SPEAK\n",
+    "210 OK QUIT\n",
+]
+for needle in required:
+    if needle not in output:
+        raise SystemExit("missing stdout %r in %r" % (needle, output))
+if "Traceback" in output:
+    raise SystemExit("stdout contains a traceback")
+if "399 ERR MODULE CLOSED" in output:
+    raise SystemExit("module loop did not recover after async speak error")
+if ret != 0:
+    raise SystemExit("unexpected return value: %r" % ret)
+if not module.closed:
+    raise SystemExit("module_close was not called")
+if module.spoken != [("Hello", 5, speechd_types.SPD_MSGTYPE_TEXT)]:
+    raise SystemExit("unexpected spoken messages: %r" % (module.spoken,))
+if "Traceback" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain a traceback")
+if "RuntimeError: async speak failed" not in stderr.getvalue():
+    raise SystemExit("stderr does not contain the exception")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python fake module protocol])
+AT_KEYWORDS([python module_process fake-backend])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import os
+import sys
+
+from speechd_python_modules import module_main, module_utils, speechd_types
+from speechd_python_modules.module_process import (
+    module_report_event_begin,
+    module_report_event_end,
+    module_speak_ok,
+    module_tts_output_server,
+)
+
+
+class FakeStdout:
+    def __init__(self):
+        self.chunks = []
+        self.buffer = self
+
+    def write(self, data):
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self.chunks.append(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def value(self):
+        return b"".join(self.chunks)
+
+
+class ScriptedStdin:
+    def __init__(self, data):
+        self.lines = iter(data.splitlines(True))
+        self.read_fd, self.write_fd = os.pipe()
+
+    def readline(self):
+        return next(self.lines, "")
+
+    def fileno(self):
+        return self.read_fd
+
+    def close(self):
+        os.close(self.read_fd)
+        os.close(self.write_fd)
+
+
+class FakeModule:
+    def __init__(self):
+        self.settings = {}
+        self.spoken = []
+        self.closed = False
+
+    def module_init(self):
+        return "fake initialized"
+
+    def module_list_voices(self):
+        return [
+            speechd_types.SPDVoice("fake-fr", "fr", "FEMALE1"),
+            speechd_types.SPDVoice("fake-en", "en-US", "MALE1"),
+        ]
+
+    def module_set(self, var, val):
+        self.settings[var] = val
+        return 0
+
+    def module_speak_sync(self, text, text_len, msgtype):
+        self.spoken.append((text, text_len, msgtype))
+        module_speak_ok()
+        module_report_event_begin()
+        module_tts_output_server(
+            speechd_types.AudioTrack(
+                bits=16,
+                num_channels=1,
+                sample_rate=24000,
+                num_samples=4,
+                samples=b"\x00\x00\x0a\x00\x7d\x00\x01\x00",
+            ),
+            speechd_types.SPD_AUDIO_LE,
+        )
+        module_report_event_end()
+
+    def module_close(self):
+        self.closed = True
+        return 0
+
+
+script = (
+    "INIT\n"
+    "LIST VOICES\n"
+    "SET\n"
+    "voice=fake-fr\n"
+    "rate=10\n"
+    ".\n"
+    "AUDIO\n"
+    "audio_output_method=server\n"
+    ".\n"
+    "LOGLEVEL\n"
+    "log_level=4\n"
+    ".\n"
+    "SPEAK\n"
+    "Hello\n"
+    ".\n"
+    "CHAR\n"
+    "space\n"
+    ".\n"
+    "KEY\n"
+    "Enter\n"
+    ".\n"
+    "QUIT\n"
+)
+
+fake = FakeModule()
+stdin = ScriptedStdin(script)
+stdout = FakeStdout()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+try:
+    sys.stdin = stdin
+    sys.stdout = stdout
+    ret = module_main.run_main(lambda _path: {}, lambda _config: fake, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    stdin.close()
+
+if ret != 0:
+    raise SystemExit("fake module returned %d" % ret)
+if not fake.closed:
+    raise SystemExit("fake module was not closed")
+if fake.settings != {"voice": "fake-fr", "rate": "10"}:
+    raise SystemExit("unexpected SET values: %r" % fake.settings)
+if module_utils.log_level != 4:
+    raise SystemExit("unexpected log level: %r" % module_utils.log_level)
+
+expected_spoken = [
+    ("Hello", 5, speechd_types.SPD_MSGTYPE_TEXT),
+    (" ", 1, speechd_types.SPD_MSGTYPE_CHAR),
+    ("Enter", 5, speechd_types.SPD_MSGTYPE_KEY),
+]
+if fake.spoken != expected_spoken:
+    raise SystemExit("unexpected spoken messages: %r" % (fake.spoken,))
+
+output = stdout.value()
+required = [
+    b"299-fake initialized\n",
+    b"299 OK LOADED SUCCESSFULLY\n",
+    b"200-fake-fr\tfr\tFEMALE1\n",
+    b"200-fake-en\ten-US\tMALE1\n",
+    b"200 OK VOICE LIST SENT\n",
+    b"203 OK SETTINGS RECEIVED\n",
+    b"203 OK AUDIO INITIALIZED\n",
+    b"203 OK LOGLEVEL SET\n",
+    b"210 OK QUIT\n",
+]
+for needle in required:
+    if needle not in output:
+        raise SystemExit("missing output: %r in %r" % (needle, output))
+
+audio_event = (
+    b"705-bits=16\n"
+    b"705-num_channels=1\n"
+    b"705-sample_rate=24000\n"
+    b"705-num_samples=4\n"
+    b"705-big_endian=0\n"
+    b"705-AUDIO\0"
+    b"\x00\x00\x7d\x2a\x00\x7d\x5d\x00\x01\x00"
+    b"\n705 AUDIO\n"
+)
+speech_event = b"200 OK SPEAKING\n701 BEGIN\n" + audio_event + b"702 END\n"
+if output.count(speech_event) != 3:
+    raise SystemExit("unexpected binary speech events: %r" % output)
+if output.count(b"705-AUDIO\0") != 3:
+    raise SystemExit("unexpected audio event count: %r" % output)
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python protocol edge cases])
+AT_KEYWORDS([python module_process edge-cases])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules import module_main, speechd_types
+from speechd_python_modules.module_process import module_speak_ok
+
+
+class EdgeModule:
+    def __init__(self):
+        self.closed = False
+        self.spoken = []
+
+    def module_init(self):
+        return "edge initialized"
+
+    def module_list_voices(self):
+        return [speechd_types.SPDVoice("fake-en", "en-US", "MALE1")]
+
+    def module_speak_sync(self, text, text_len, msgtype):
+        self.spoken.append((text, text_len, msgtype))
+        module_speak_ok()
+
+    def module_close(self):
+        self.closed = True
+
+
+script = (
+    "INIT\n"
+    "SPEAK\n"
+    ".\n"
+    "CHAR\n"
+    "a\n"
+    "b\n"
+    ".\n"
+    "SPEAK\n"
+    ".First\n"
+    ".\n"
+    "LIST VOICES de\n"
+    "QUIT\n"
+)
+
+module = EdgeModule()
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+stdout = io.StringIO()
+try:
+    sys.stdin = io.StringIO(script)
+    sys.stdout = stdout
+    ret = module_main.run_main(lambda _path: {}, lambda _config: module, ["fake-module"])
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+
+expected = (
+    "299-edge initialized\n"
+    "299 OK LOADED SUCCESSFULLY\n"
+    "202 OK RECEIVING MESSAGE\n"
+    "301 ERROR CANT SPEAK\n"
+    "202 OK RECEIVING MESSAGE\n"
+    "305 DATA MORE THAN ONE LINE\n"
+    "202 OK RECEIVING MESSAGE\n"
+    "200 OK SPEAKING\n"
+    "304 CANT LIST VOICES\n"
+    "210 OK QUIT\n"
+)
+if stdout.getvalue() != expected:
+    raise SystemExit("unexpected protocol output: %r" % stdout.getvalue())
+if ret != 0:
+    raise SystemExit("unexpected return value: %r" % ret)
+if not module.closed:
+    raise SystemExit("module_close was not called")
+if module.spoken != [("First", 5, speechd_types.SPD_MSGTYPE_TEXT)]:
+    raise SystemExit("unexpected spoken messages: %r" % (module.spoken,))
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python audio command rejects local output])
+AT_KEYWORDS([python module_process audio])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import io
+import sys
+
+from speechd_python_modules.module_process import cmd_audio
+
+
+old_stdin = sys.stdin
+old_stdout = sys.stdout
+stdout = io.StringIO()
+try:
+    sys.stdin = io.StringIO("audio_output_method=pulse\n.\n")
+    sys.stdout = stdout
+    cmd_audio(object())
+finally:
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+
+output = stdout.getvalue()
+expected = (
+    "207 OK RECEIVING AUDIO SETTINGS\n"
+    "303 ERROR INVALID PARAMETER OR VALUE\n"
+)
+if output != expected:
+    raise SystemExit("unexpected AUDIO response: %r" % output)
+if "203 OK AUDIO INITIALIZED" in output:
+    raise SystemExit("local audio was accepted")
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python audio track validation])
+AT_KEYWORDS([python module_process audio])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+from speechd_python_modules import speechd_types
+from speechd_python_modules.module_process import (
+    module_tts_output_send_server,
+    module_tts_output_server,
+)
+
+
+def track(bits=16, num_channels=1, num_samples=1, samples=b"\0\0"):
+    return speechd_types.AudioTrack(
+        bits=bits,
+        num_channels=num_channels,
+        sample_rate=24000,
+        num_samples=num_samples,
+        samples=samples,
+    )
+
+
+def check_raises(func, audio_track, expected, audio_format=speechd_types.SPD_AUDIO_LE):
+    try:
+        func(audio_track, audio_format)
+    except ValueError as exc:
+        if str(exc) != expected:
+            raise SystemExit("unexpected error %r, expected %r" % (str(exc), expected))
+    else:
+        raise SystemExit("expected ValueError: %s" % expected)
+
+
+check_raises(
+    module_tts_output_server,
+    track(bits=7),
+    "track.bits must be a positive multiple of 8",
+)
+check_raises(
+    module_tts_output_server,
+    track(bits=0),
+    "track.bits must be a positive multiple of 8",
+)
+check_raises(
+    module_tts_output_server,
+    track(num_channels=0),
+    "track.num_channels must be positive",
+)
+check_raises(
+    module_tts_output_server,
+    track(num_samples=-1, samples=b""),
+    "track.num_samples must not be negative",
+)
+check_raises(
+    module_tts_output_server,
+    track(bits=80008, samples=b""),
+    "sample size is larger than MAX_CHUNK",
+)
+check_raises(
+    module_tts_output_send_server,
+    track(num_samples=2, samples=b"\0\0"),
+    "invalid AudioTrack payload size: got 2 bytes, expected 4",
+)
+check_raises(
+    module_tts_output_server,
+    track(num_samples=2, samples=b"\0\0\0\0\0"),
+    "invalid AudioTrack payload size: got 5 bytes, expected 4",
+)
+check_raises(
+    module_tts_output_send_server,
+    track(),
+    "invalid audio format",
+    audio_format=99,
+)
+PY
+]], [0], [], [])
+
+AT_CLEANUP
+
+AT_SETUP([Python audio track chunking])
+AT_KEYWORDS([python module_process audio])
+
+AT_SKIP_IF([test "x$TEST_PYTHON_ENABLED" != xyes])
+
+AT_CHECK([[test_pythonpath=${TEST_PYTHONPATH-"$abs_top_srcdir/src/modules"}
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$test_pythonpath" \
+"$PYTHON" - <<'PY'
+import sys
+
+from speechd_python_modules import speechd_types
+from speechd_python_modules.module_process import module_tts_output_server
+
+
+class FakeStdout:
+    def __init__(self):
+        self.chunks = []
+        self.buffer = self
+
+    def write(self, data):
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self.chunks.append(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def value(self):
+        return b"".join(self.chunks)
+
+
+samples = b"\x01\x00" * 6001
+track = speechd_types.AudioTrack(
+    bits=16,
+    num_channels=1,
+    sample_rate=24000,
+    num_samples=6001,
+    samples=samples,
+)
+
+stdout = FakeStdout()
+old_stdout = sys.stdout
+try:
+    sys.stdout = stdout
+    module_tts_output_server(track, speechd_types.SPD_AUDIO_LE)
+finally:
+    sys.stdout = old_stdout
+
+output = stdout.value()
+if output.count(b"705-AUDIO\0") != 2:
+    raise SystemExit("unexpected number of audio chunks: %r" % output)
+if output.count(b"\n705 AUDIO\n") != 2:
+    raise SystemExit("unexpected number of audio footers: %r" % output)
+if b"705-num_samples=5000\n" not in output:
+    raise SystemExit("first chunk size missing: %r" % output)
+if b"705-num_samples=1001\n" not in output:
+    raise SystemExit("second chunk size missing: %r" % output)
+
+first = output.find(b"705-num_samples=5000\n")
+second = output.find(b"705-num_samples=1001\n")
+if first == -1 or second == -1 or first > second:
+    raise SystemExit("audio chunks are not in the expected order: %r" % output)
 PY
 ]], [0], [], [])
 

@@ -30,6 +30,8 @@ if HAVE_PYTHON
 speechd_python_modules_pythondir = $(pythondir)/speechd_python_modules
 dist_speechd_python_modules_python_PYTHON = \
 	speechd_python_modules/__init__.py \
+	speechd_python_modules/module_main.py \
+	speechd_python_modules/module_process.py \
 	speechd_python_modules/module_utils.py \
 	speechd_python_modules/speechd_types.py
 endif

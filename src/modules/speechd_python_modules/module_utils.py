@@ -27,6 +27,77 @@
 #
 
 
+log_level = 0
+Debug = 0
+CustomDebugFile = None
+
+
+def module_loop(module):
+    from .module_process import module_process
+
+    return module_process(module, block=True)
+
+
+def module_loglevel_set(cur_item, cur_value):
+    global log_level
+
+    if cur_item != "log_level":
+        return -1
+
+    value = cur_value.lstrip()
+    if not value:
+        return -1
+
+    sign = 1
+    if value[0] in "+-":
+        if value[0] == "-":
+            sign = -1
+        value = value[1:]
+        if not value:
+            return -1
+
+    if not value[0].isdigit():
+        return -1
+
+    number = 0
+    for char in value:
+        if not char.isdigit():
+            break
+        number = number * 10 + int(char)
+
+    log_level = sign * number
+    return 0
+
+
+def module_debug(enable, filename):
+    global CustomDebugFile, Debug
+
+    if enable:
+        try:
+            new_custom_debug_file = open(filename, "w+")
+        except OSError:
+            return -1
+
+        if CustomDebugFile is not None:
+            CustomDebugFile.close()
+        CustomDebugFile = new_custom_debug_file
+        if Debug == 1:
+            Debug = 3
+        else:
+            Debug = 2
+    else:
+        if Debug == 3:
+            Debug = 1
+        else:
+            Debug = 0
+
+        if CustomDebugFile is not None:
+            CustomDebugFile.close()
+        CustomDebugFile = None
+
+    return 0
+
+
 def module_strip_ssml(message: str) -> str:
     out = []
     append = out.append
