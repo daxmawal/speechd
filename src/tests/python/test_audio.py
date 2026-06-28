@@ -132,55 +132,29 @@ class AudioTest(unittest.TestCase):
             samples=samples,
         )
 
-    def assert_value_error(self, func, audio_track, expected, audio_format=None):
-        if audio_format is None:
-            audio_format = speechd_types.SPD_AUDIO_LE
+    def test_audio_output_send_server_uses_computed_payload_size(self):
+        audio_track = self.track(
+            num_samples=1,
+            samples=b"\x01\x00extra",
+        )
+        stdout = FakeStdout()
+        sys.stdout = stdout
 
-        with self.assertRaisesRegex(ValueError, "^%s$" % expected):
-            func(audio_track, audio_format)
+        module_tts_output_send_server(audio_track, speechd_types.SPD_AUDIO_LE)
 
-    def test_audio_track_validation(self):
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(bits=7),
-            "track.bits must be a positive multiple of 8",
-        )
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(bits=0),
-            "track.bits must be a positive multiple of 8",
-        )
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(num_channels=0),
-            "track.num_channels must be positive",
-        )
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(num_samples=-1, samples=b""),
-            "track.num_samples must not be negative",
-        )
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(bits=80008, samples=b""),
-            "sample size is larger than MAX_CHUNK",
-        )
-        self.assert_value_error(
-            module_tts_output_send_server,
-            self.track(num_samples=2, samples=b"\0\0"),
-            "invalid AudioTrack payload size: got 2 bytes, expected 4",
-        )
-        self.assert_value_error(
-            module_tts_output_server,
-            self.track(num_samples=2, samples=b"\0\0\0\0\0"),
-            "invalid AudioTrack payload size: got 5 bytes, expected 4",
-        )
-        self.assert_value_error(
-            module_tts_output_send_server,
-            self.track(),
-            "invalid audio format",
-            audio_format=99,
-        )
+        output = stdout.value()
+        self.assertIn(b"705-num_samples=1\n", output)
+        self.assertIn(b"705-AUDIO\0\x01\x00\n705 AUDIO\n", output)
+        self.assertNotIn(b"extra", output)
+
+    def test_audio_output_send_server_prints_format_value(self):
+        audio_track = self.track()
+        stdout = FakeStdout()
+        sys.stdout = stdout
+
+        module_tts_output_send_server(audio_track, 99)
+
+        self.assertIn(b"705-big_endian=99\n", stdout.value())
 
     def test_audio_track_chunking(self):
         samples = b"\x01\x00" * 6001

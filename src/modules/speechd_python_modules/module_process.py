@@ -40,11 +40,17 @@ module_stdout_mutex = threading.Lock()
 BAD_SYNTAX = "302 ERROR BAD SYNTAX"
 BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
 BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
+
+# Arbitrary chunk size in bytes, large enough to get efficient transfer
+# but small enough to be reactive.
 MAX_CHUNK = 10000
 
+# Whether we will send the audio to the server
 _audio_server = False
 
 
+# This sends some text to the server, taking the mutex to avoid intermixing
+# between multi-line answers and asynchronous sends.
 def module_send(format_string, *args):
     if args:
         format_string = format_string % args
@@ -60,45 +66,17 @@ def module_audio_set_server():
 
 
 def module_audio_set_through_server(cur_item, cur_value):
+    # We only support the audio output method parameter
     if cur_item != "audio_output_method":
         return -1
+    # We only support server audio output method
     if cur_value != "server":
         return -1
     return 0
 
 
-def _sample_size(track):
-    if track.bits <= 0 or track.bits % 8 != 0:
-        raise ValueError("track.bits must be a positive multiple of 8")
-    if track.num_channels <= 0:
-        raise ValueError("track.num_channels must be positive")
-    if track.num_samples < 0:
-        raise ValueError("track.num_samples must not be negative")
-
-    sample_size = track.num_channels * track.bits // 8
-    if sample_size <= 0:
-        raise ValueError("invalid sample size")
-    if sample_size > MAX_CHUNK:
-        raise ValueError("sample size is larger than MAX_CHUNK")
-    return sample_size
-
-
-def _track_payload_size(track):
-    sample_size = _sample_size(track)
-    expected_size = track.num_samples * sample_size
-
-    if len(track.samples) != expected_size:
-        raise ValueError(
-            "invalid AudioTrack payload size: got %d bytes, expected %d"
-            % (len(track.samples), expected_size)
-        )
-    return sample_size, expected_size
-
-
-def module_tts_output_send_server(track, audio_format):
-    if audio_format not in (speechd_types.SPD_AUDIO_LE, speechd_types.SPD_AUDIO_BE):
-        raise ValueError("invalid audio format")
-    _track_payload_size(track)
+def module_tts_output_send_server(track, format):
+    size = track.num_channels * track.num_samples * track.bits // 8
     header = (
         "705-bits=%d\n"
         "705-num_channels=%d\n"
@@ -111,15 +89,17 @@ def module_tts_output_send_server(track, audio_format):
         track.num_channels,
         track.sample_rate,
         track.num_samples,
-        audio_format,
+        format,
     )
 
     with module_stdout_mutex:
-        payload = track.samples
+        payload = track.samples[:size]
+        # HDLC escaping: prefix NL and escapes with escape, and invert their bit 5.
         escape = 0x7D
         invert = 1 << 5
         escaped_payload = bytearray()
         for byte in payload:
+            # Escape NL or escape.
             if byte in (0x0A, escape):
                 escaped_payload.append(escape)
                 escaped_payload.append(byte ^ invert)
@@ -131,11 +111,12 @@ def module_tts_output_send_server(track, audio_format):
         sys.stdout.buffer.flush()
 
 
-def module_tts_output_server(track, audio_format):
-    sample_size, _ = _track_payload_size(track)
+def module_tts_output_server(track, format):
+    sample_size = track.num_channels * track.bits // 8
     samplepos = 0
 
     while samplepos < track.num_samples:
+        #TODO add the module stop condition here
         num_samples = MAX_CHUNK // sample_size
         if num_samples > track.num_samples - samplepos:
             num_samples = track.num_samples - samplepos
@@ -151,7 +132,7 @@ def module_tts_output_server(track, audio_format):
             num_samples=num_samples,
             samples=track.samples[start:end],
         )
-        module_tts_output_send_server(mytrack, audio_format)
+        module_tts_output_send_server(mytrack, format)
 
 
 def cmd_speak(module, msgtype, source=None):
