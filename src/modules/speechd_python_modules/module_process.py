@@ -143,8 +143,10 @@ def cmd_speak(module, msgtype, source=None):
     while True:
         line = module_readline(source, block=True)
         if line is None:
+            # EOF
             return
         if line == ".\n":
+            # Replace \n at the end with a \0
             break
         if line.startswith("."):
             line = line[1:]
@@ -169,10 +171,12 @@ def cmd_speak(module, msgtype, source=None):
             text = " "
             text_len = 1
 
-    speak_sync = getattr(module, "module_speak_sync", None)
-    if speak_sync is not None:
+    #TODO module_should_stop = 0
+
+    module_speak_sync = getattr(module, "module_speak_sync", None)
+    if module_speak_sync is not None:
         try:
-            speak_sync(text, text_len, msgtype)
+            module_speak_sync(text, text_len, msgtype)
         except Exception:
             traceback.print_exc(file=sys.stderr)
             module_speak_error()
@@ -195,6 +199,9 @@ def cmd_speak_text(module, source=None):
     return cmd_speak(module, speechd_types.SPD_MSGTYPE_TEXT, source)
 
 
+#TODO implement def cmd_speak_sound_icon(int fd)
+
+
 def cmd_speak_char(module, source=None):
     return cmd_speak(module, speechd_types.SPD_MSGTYPE_CHAR, source)
 
@@ -209,6 +216,12 @@ def module_speak_ok():
 
 def module_speak_error():
     module_send("301 ERROR CANT SPEAK\n")
+
+
+#TODO implement def cmd_stop()
+
+
+#TODO implement dev cmd_pause()
 
 
 def cmd_list_voices(module, line):
