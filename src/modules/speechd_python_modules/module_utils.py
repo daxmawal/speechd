@@ -27,6 +27,9 @@
 #
 
 
+import re
+
+
 log_level = 0
 Debug = 0
 CustomDebugFile = None
@@ -44,28 +47,12 @@ def module_loglevel_set(cur_item, cur_value):
     if cur_item != "log_level":
         return -1
 
-    value = cur_value.lstrip()
-    if not value:
+    # I didn't find equivalent to strtol()
+    match = re.match(r"\s*([+-]?[0-9]+)", cur_value)
+    if match is None:
         return -1
 
-    sign = 1
-    if value[0] in "+-":
-        if value[0] == "-":
-            sign = -1
-        value = value[1:]
-        if not value:
-            return -1
-
-    if not value[0].isdigit():
-        return -1
-
-    number = 0
-    for char in value:
-        if not char.isdigit():
-            break
-        number = number * 10 + int(char)
-
-    log_level = sign * number
+    log_level = int(match.group(1), 10)
     return 0
 
 
