@@ -41,7 +41,8 @@ class _ReadBuffer:
         self.data = bytearray()
         self.no_lf = 0
 
-
+# Should Python callers pass sys.stdin explicitly instead of relying 
+# on source=None, to stay closer to the C module_readline(fd, block) API?
 def module_readline(source=None, block=True):
     if source is None:
         source = sys.stdin
