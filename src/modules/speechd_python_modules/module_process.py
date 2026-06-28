@@ -26,13 +26,12 @@
 # SUCH DAMAGE.
 #
 
-import os
-import select
 import sys
 import threading
 import traceback
 
 from . import speechd_types
+from .module_readline import module_readline
 from .module_utils import module_debug, module_loglevel_set
 
 
@@ -42,10 +41,8 @@ BAD_SYNTAX = "302 ERROR BAD SYNTAX"
 BAD_PARAM = "303 ERROR INVALID PARAMETER OR VALUE"
 BAD_MULTILINE = "305 DATA MORE THAN ONE LINE"
 MAX_CHUNK = 10000
-READ_CHUNK = 4096
 
 _audio_server = False
-_fd_buffers = {}
 
 
 def module_send(format_string, *args):
@@ -163,7 +160,7 @@ def cmd_speak(module, msgtype, source=None):
     lines = []
     nlines = 0
     while True:
-        line = _readline(source, block=True)
+        line = module_readline(source, block=True)
         if line is None:
             return
         if line == ".\n":
@@ -290,7 +287,7 @@ def cmd_params(ack, param_type, set_param, source=None):
     err = None
 
     while True:
-        line = _readline(source, block=True)
+        line = module_readline(source, block=True)
         if line is None:
             return -1
 
@@ -429,7 +426,7 @@ def module_process(module, fd=None, block=True):
     source = sys.stdin if fd is None else fd
 
     while True:
-        line = _readline(source, block)
+        line = module_readline(source, block)
         if line is None:
             return -1
 
@@ -462,75 +459,6 @@ def module_report_event_begin():
 
 def module_report_event_end():
     module_send("702 END\n")
-
-
-def _readline(source=None, block=True):
-    if source is None:
-        source = sys.stdin
-    if isinstance(source, int):
-        return _readline_fd(source, block)
-
-    if not block:
-        if _can_select(source):
-            readable, _, _ = select.select([source], [], [], 0)
-            if not readable:
-                return None
-        else:
-            return None
-
-    line = source.readline()
-    return _decode_line(line)
-
-
-def _readline_fd(fd, block):
-    buffer = _fd_buffers.setdefault(fd, bytearray())
-
-    while True:
-        newline = buffer.find(b"\n")
-        if newline != -1:
-            line = bytes(buffer[:newline + 1])
-            del buffer[:newline + 1]
-            if not buffer:
-                _fd_buffers.pop(fd, None)
-            return _decode_bytes(line)
-
-        timeout = None if block else 0
-        readable, _, _ = select.select([fd], [], [], timeout)
-        if not readable:
-            return None
-
-        try:
-            chunk = os.read(fd, READ_CHUNK)
-        except (InterruptedError, BlockingIOError):
-            if not block:
-                return None
-            continue
-
-        if not chunk:
-            _fd_buffers.pop(fd, None)
-            return None
-
-        buffer.extend(chunk)
-
-
-def _can_select(source):
-    try:
-        source.fileno()
-    except (AttributeError, OSError, ValueError):
-        return False
-    return True
-
-
-def _decode_line(line):
-    if not line:
-        return None
-    if isinstance(line, bytes):
-        return _decode_bytes(line)
-    return line
-
-
-def _decode_bytes(data):
-    return data.decode("utf-8", "surrogateescape")
 
 
 def _call_module(module, name, *args):
