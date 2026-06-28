@@ -625,6 +625,7 @@ import os
 import sys
 
 from speechd_python_modules import speechd_types
+from speechd_python_modules.module_readline import module_readline
 from speechd_python_modules.module_process import module_process, module_speak_ok
 
 
@@ -647,6 +648,10 @@ old_stdout = sys.stdout
 stdout = io.StringIO()
 empty_read_fd = None
 empty_write_fd = None
+partial_read_fd = None
+partial_write_fd = None
+eof_partial_read_fd = None
+eof_partial_write_fd = None
 script_read_fd = None
 script_write_fd = None
 try:
@@ -666,6 +671,33 @@ try:
     os.close(empty_write_fd)
     empty_write_fd = None
 
+    partial_read_fd, partial_write_fd = os.pipe()
+    os.write(partial_write_fd, b"partial")
+    line = module_readline(partial_read_fd, block=False)
+    if line is not None:
+        raise SystemExit("unexpected partial nonblocking line: %r" % line)
+    os.write(partial_write_fd, b"\nnext\n")
+    line = module_readline(partial_read_fd, block=False)
+    if line != "partial\n":
+        raise SystemExit("unexpected completed line: %r" % line)
+    line = module_readline(partial_read_fd, block=False)
+    if line != "next\n":
+        raise SystemExit("unexpected buffered line: %r" % line)
+    os.close(partial_read_fd)
+    partial_read_fd = None
+    os.close(partial_write_fd)
+    partial_write_fd = None
+
+    eof_partial_read_fd, eof_partial_write_fd = os.pipe()
+    os.write(eof_partial_write_fd, b"partial")
+    os.close(eof_partial_write_fd)
+    eof_partial_write_fd = None
+    line = module_readline(eof_partial_read_fd, block=True)
+    if line is not None:
+        raise SystemExit("unexpected partial EOF line: %r" % line)
+    os.close(eof_partial_read_fd)
+    eof_partial_read_fd = None
+
     script_read_fd, script_write_fd = os.pipe()
     os.write(script_write_fd, "SPEAK\ncaf\u00e9\n.\nQUIT\n".encode("utf-8"))
     os.close(script_write_fd)
@@ -678,6 +710,10 @@ finally:
     for descriptor in (
         empty_read_fd,
         empty_write_fd,
+        partial_read_fd,
+        partial_write_fd,
+        eof_partial_read_fd,
+        eof_partial_write_fd,
         script_read_fd,
         script_write_fd,
     ):
@@ -746,18 +782,18 @@ class FakeStdout:
 
 class ScriptedStdin:
     def __init__(self, data):
-        self.lines = iter(data.splitlines(True))
         self.read_fd, self.write_fd = os.pipe()
-
-    def readline(self):
-        return next(self.lines, "")
+        os.write(self.write_fd, data.encode("utf-8"))
+        os.close(self.write_fd)
+        self.write_fd = None
 
     def fileno(self):
         return self.read_fd
 
     def close(self):
         os.close(self.read_fd)
-        os.close(self.write_fd)
+        if self.write_fd is not None:
+            os.close(self.write_fd)
 
 
 class FakeModule:

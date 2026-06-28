@@ -36,38 +36,55 @@ READ_CHUNK = 4096
 _fd_buffers = {}
 
 
+class _ReadBuffer:
+    def __init__(self):
+        self.data = bytearray()
+        self.no_lf = 0
+
+
 def module_readline(source=None, block=True):
     if source is None:
         source = sys.stdin
     if isinstance(source, int):
         return _readline_fd(source, block)
 
+    fd = _source_fd(source)
+    if fd is not None:
+        return _readline_fd(fd, block)
+
     if not block:
-        if _can_select(source):
-            readable, _, _ = select.select([source], [], [], 0)
-            if not readable:
-                return None
-        else:
-            return None
+        return None
 
     line = source.readline()
-    return _decode_line(line)
+    return _decode_complete_line(line)
 
 
 def _readline_fd(fd, block):
-    buffer = _fd_buffers.setdefault(fd, bytearray())
+    state = _fd_buffers.get(fd)
 
     while True:
-        newline = buffer.find(b"\n")
-        if newline != -1:
-            line = bytes(buffer[: newline + 1])
-            del buffer[: newline + 1]
-            if not buffer:
-                _fd_buffers.pop(fd, None)
-            return _decode_bytes(line)
+        if state is not None:
+            newline = state.data.find(b"\n", state.no_lf)
+            if newline != -1:
+                line = bytes(state.data[: newline + 1])
+                del state.data[: newline + 1]
+                state.no_lf = 0
+                if not state.data:
+                    _fd_buffers.pop(fd, None)
+                return _decode_bytes(line)
 
-        timeout = None if block else 0
-        readable, _, _ = select.select([fd], [], [], timeout)
+            state.no_lf = len(state.data)
+
+        try:
+            readable, _, _ = select.select([fd], [], [], None if block else 0)
+        except (InterruptedError, BlockingIOError):
+            if not block:
+                return None
+            continue
+        except OSError:
+            _fd_buffers.pop(fd, None)
+            return None
+
         if not readable:
             return None
 
@@ -77,24 +94,33 @@ def _readline_fd(fd, block):
             if not block:
                 return None
             continue
-
-        if not chunk:
+        except OSError:
             _fd_buffers.pop(fd, None)
             return None
 
-        buffer.extend(chunk)
+        if not chunk:
+            if state is not None:
+                _fd_buffers.pop(fd, None)
+            return None
+
+        if state is None:
+            state = _ReadBuffer()
+            _fd_buffers[fd] = state
+
+        state.data.extend(chunk)
 
 
-def _can_select(source):
+def _source_fd(source):
     try:
-        source.fileno()
+        return source.fileno()
     except (AttributeError, OSError, ValueError):
-        return False
-    return True
+        return None
 
 
-def _decode_line(line):
+def _decode_complete_line(line):
     if not line:
+        return None
+    if not line.endswith(b"\n" if isinstance(line, bytes) else "\n"):
         return None
     if isinstance(line, bytes):
         return _decode_bytes(line)

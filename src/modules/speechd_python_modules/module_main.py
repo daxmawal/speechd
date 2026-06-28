@@ -29,6 +29,7 @@
 import sys
 import traceback
 
+from .module_readline import module_readline
 from .module_utils import module_loop
 
 
@@ -65,7 +66,7 @@ def run_main(module_config, module_factory, argv=None, reexec=None):
         module_close(None)
         return 1
 
-    line = sys.stdin.readline()
+    line = module_readline()
     if line != "INIT\n":
         sys.stderr.write("ERROR: Server did not start with INIT\n")
         sys.stderr.flush()
