@@ -48,6 +48,8 @@ MAX_CHUNK = 10000
 # Whether we will send the audio to the server
 _audio_server = False
 
+#TODO module_should_stop = 0
+
 
 # This sends some text to the server, taking the mutex to avoid intermixing
 # between multi-line answers and asynchronous sends.
@@ -199,7 +201,7 @@ def cmd_speak_text(module, source=None):
     return cmd_speak(module, speechd_types.SPD_MSGTYPE_TEXT, source)
 
 
-#TODO implement def cmd_speak_sound_icon(int fd)
+#TODO implement def cmd_speak_sound_icon(module, source=None)
 
 
 def cmd_speak_char(module, source=None):
@@ -218,10 +220,10 @@ def module_speak_error():
     module_send("301 ERROR CANT SPEAK\n")
 
 
-#TODO implement def cmd_stop()
+#TODO implement def cmd_stop(module)
 
 
-#TODO implement dev cmd_pause()
+#TODO implement def cmd_pause(module)
 
 
 def cmd_list_voices(module, line):
@@ -426,10 +428,13 @@ def module_process(module, fd=None, block=True):
 
         if line == "SPEAK\n":
             cmd_speak_text(module, source)
+        #TODO dispatch SOUND_ICON to cmd_speak_sound_icon(module, source)
         elif line == "CHAR\n":
             cmd_speak_char(module, source)
         elif line == "KEY\n":
             cmd_speak_key(module, source)
+        #TODO dispatch STOP to cmd_stop(module)
+        #TODO dispatch PAUSE to cmd_pause(module)
         elif line.startswith("LIST VOICES"):
             cmd_list_voices(module, line)
         elif line == "SET\n":
@@ -453,6 +458,15 @@ def module_report_event_begin():
 
 def module_report_event_end():
     module_send("702 END\n")
+
+
+#TODO implement def module_report_event_stop()
+
+
+#TODO implement def module_report_event_pause()
+
+
+#TODO implement def module_report_icon(icon)
 
 
 def _call_module(module, name, *args):
