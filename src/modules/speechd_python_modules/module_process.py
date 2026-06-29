@@ -421,7 +421,13 @@ def cmd_debug(module, line):
 
 
 def cmd_quit(module):
-    _call_module(module, "module_close")
+    module_close = getattr(module, "module_close", None)
+    if module_close is not None:
+        try:
+            module_close()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+
     module_send("210 OK QUIT\n")
 
 
@@ -474,14 +480,3 @@ def module_report_event_end():
 
 
 #TODO implement def module_report_icon(icon)
-
-
-def _call_module(module, name, *args):
-    handler = getattr(module, name, None)
-    if handler is not None:
-        try:
-            return handler(*args)
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
-    return None
-cmd_audio
