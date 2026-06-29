@@ -251,6 +251,7 @@ def cmd_list_voices(module, line):
             language = voice.language
             variant = voice.variant
             if not name:
+                # Ok, skip this
                 continue
 
             language = language or "none"
@@ -264,8 +265,10 @@ def cmd_list_voices(module, line):
                         len(requested_language) != langlen
                         or requested_language.lower() != language[:langlen].lower()
                     ):
+                        # Not the requested language
                         continue
                 if requested_variant and requested_variant.lower() != variant.lower():
+                    # Not the requested variant, skip
                     continue
 
             one = True
@@ -285,6 +288,7 @@ def cmd_params(ack, param_type, set_param, source=None):
     while True:
         line = module_readline(source, block=True)
         if line is None:
+            # EOF
             return -1
 
         if line == ".\n":
@@ -313,6 +317,7 @@ def cmd_params(ack, param_type, set_param, source=None):
             err = BAD_PARAM
 
 
+#TODO add a Python equivalent of module_utils.c:module_set for standard settings
 def _module_set_missing(_var, _val):
     return -1
 
@@ -324,10 +329,12 @@ def cmd_set(module, source=None):
     module_send("203 OK SETTINGS RECEIVED\n")
 
 
+#TODO add Python equivalents of module_utils.c:module_audio_set
 def _module_audio_set_missing(_cur_item, _cur_value):
     return -1
 
 
+#TODO add Python equivalents of module_audio_init and move this in module_utils.py
 def _module_audio_init(module):
     audio_init = getattr(module, "module_audio_init", None)
     if audio_init is None:
@@ -477,3 +484,4 @@ def _call_module(module, name, *args):
         except Exception:
             traceback.print_exc(file=sys.stderr)
     return None
+cmd_audio
