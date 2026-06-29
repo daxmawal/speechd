@@ -421,12 +421,10 @@ def cmd_debug(module, line):
 
 
 def cmd_quit(module):
-    module_close = getattr(module, "module_close", None)
-    if module_close is not None:
-        try:
-            module_close()
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
+    try:
+        module.module_close()
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
 
     module_send("210 OK QUIT\n")
 
