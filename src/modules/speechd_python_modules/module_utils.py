@@ -27,6 +27,64 @@
 #
 
 
+import re
+
+
+log_level = 0
+Debug = 0
+CustomDebugFile = None
+
+
+def module_loop(module):
+    from .module_process import module_process
+
+    return module_process(module, block=True)
+
+
+def module_loglevel_set(cur_item, cur_value):
+    global log_level
+
+    if cur_item != "log_level":
+        return -1
+
+    # I didn't find equivalent to strtol()
+    match = re.match(r"\s*([+-]?[0-9]+)", cur_value)
+    if match is None:
+        return -1
+
+    log_level = int(match.group(1), 10)
+    return 0
+
+
+def module_debug(enable, filename):
+    global CustomDebugFile, Debug
+
+    if enable:
+        try:
+            new_custom_debug_file = open(filename, "w+")
+        except OSError:
+            return -1
+
+        if CustomDebugFile is not None:
+            CustomDebugFile.close()
+        CustomDebugFile = new_custom_debug_file
+        if Debug == 1:
+            Debug = 3
+        else:
+            Debug = 2
+    else:
+        if Debug == 3:
+            Debug = 1
+        else:
+            Debug = 0
+
+        if CustomDebugFile is not None:
+            CustomDebugFile.close()
+        CustomDebugFile = None
+
+    return 0
+
+
 def module_strip_ssml(message: str) -> str:
     out = []
     append = out.append
